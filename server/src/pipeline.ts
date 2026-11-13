@@ -5,6 +5,7 @@ import { changed, notify } from './events.ts';
 import { cancelCurrent } from './claude.ts';
 import { videoDir } from './paths.ts';
 import { recordUsage, backfillUsage } from './usage.ts';
+import { syncVideoSoon } from './storage.ts';
 
 const WORK_STAGES: Stage[] = ['research', 'script', 'production', 'produce', 'check'];
 /** Steps you can review before the next one starts. The film itself is reviewed at the final approval. */
@@ -104,6 +105,7 @@ async function runStage(v: Video, project: Project) {
   }
 
   run(`UPDATE stage_runs SET status='done', finished_at=? WHERE id=?`, now(), runId);
+  syncVideoSoon(v.id);
 
   if (stage === 'check' && res.redo) {
     const issues = res.redo.map((i) => `- ${i}`).join('\n');

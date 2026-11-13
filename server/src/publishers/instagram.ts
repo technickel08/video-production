@@ -1,6 +1,7 @@
 import { getSetting } from '../db.ts';
 import { jsonFetch, redirectUri, tokensOf, saveTokens, upsertChannel, caption, type Channel, type PostCtx, type PublishResult, type Stats } from './common.ts';
 import { shareFile } from './tunnel.ts';
+import { s3Configured, videoFileLink } from '../storage.ts';
 
 const V = 'v21.0';
 const GRAPH = () => `${process.env.GRAPH_BASE || 'https://graph.facebook.com'}/${V}`;
@@ -51,7 +52,8 @@ export async function publish(ctx: PostCtx): Promise<PublishResult> {
   if (ctx.visibility !== 'public') throw new Error('Instagram can only post public Reels; set this video to Public to post it there.');
   const access_token = await token(ctx.channel);
   const ig = ctx.channel.external_id;
-  const share = await shareFile(ctx.file);
+  // With S3 set up, Instagram downloads the video from a time-limited S3 link; otherwise from a temporary tunnel.
+  const share = s3Configured() ? { url: await videoFileLink(ctx.post.video_id, 'final.mp4', 3 * 3600), close: async () => {} } : await shareFile(ctx.file);
   try {
     const container = await jsonFetch(`${GRAPH()}/${ig}/media`, {
       method: 'POST',

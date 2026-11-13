@@ -11,12 +11,15 @@ import { health, testClaude, installVideoTools, installState } from './health.ts
 import { listStyles } from './styles.ts';
 import { VOICES, VOICE_IDS, voicePreview } from './voices.ts';
 import { performance } from './insights.ts';
-import { videoDir, PROJECTS_DIR } from './paths.ts';
+import { s3Configured, testS3, syncAll, restoreAll, backupDatabase, deleteVideoFiles, syncVideoSoon } from './storage.ts';
+import { videoDir, PROJECTS_DIR, localPath } from './paths.ts';
 import { describeEvent } from './claude.ts';
+import { auth, currentUser } from './auth.ts';
 
 export const api = new Hono();
 
 api.onError((e, c) => c.json({ error: e.message }, 400));
+api.route('/auth', auth);
 
 // ─── Live events ─────────────────────────────────────────────────────────────
 api.get('/events', (c) => streamSSE(c, async (s) => {
@@ -172,6 +175,7 @@ api.get('/videos/:id', (c) => {
 });
 api.get('/videos/:id/log/:runId', (c) => {
   const r = get<{ log_path: string; video_id: number }>('SELECT log_path, video_id FROM stage_runs WHERE id=?', Number(c.req.param('runId')));
+  if (r?.log_path) r.log_path = localPath(r.log_path);
   if (!r?.log_path || r.video_id !== Number(c.req.param('id')) || !fs.existsSync(r.log_path)) return c.json({ lines: [] });
   const lines: string[] = [];
   for (const l of fs.readFileSync(r.log_path, 'utf8').split('\n')) {
@@ -188,6 +192,7 @@ api.put('/videos/:id/metadata', async (c) => {
   for (const k of ['title', 'description', 'hashtags']) if (k in body) meta[k] = body[k];
   fs.writeFileSync(file, JSON.stringify(meta, null, 2));
   if (body.title) run('UPDATE videos SET title=?, updated_at=? WHERE id=?', body.title, now(), v.id);
+  syncVideoSoon(v.id);
   changed('video', v.id);
   return c.json(meta);
 });
@@ -213,6 +218,7 @@ api.delete('/videos/:id', (c) => {
   cancelVideo(v.id);
   run('DELETE FROM videos WHERE id=?', v.id);
   fs.rmSync(videoDir(v.project_id, v.id), { recursive: true, force: true });
+  deleteVideoFiles(v.project_id, v.id).catch((e) => console.error(`[s3] delete video ${v.id}: ${e.message}`));
   changed('video', v.id);
   return c.json({ ok: true });
 });
@@ -294,14 +300,17 @@ api.get('/oauth/:platform/callback', async (c) => {
 
 // ─── Settings & health ───────────────────────────────────────────────────────
 const SETTING_KEYS = ['paused', 'mock_mode', 'notifications', 'claude_model', 'model_research', 'model_script', 'model_production', 'model_produce', 'model_check', 'claude_path', 'produce_timeout_min', 'youtube_client_id', 'youtube_client_secret',
-  'youtube_category', 'meta_app_id', 'meta_app_secret', 'public_base_url'];
-const SECRET_KEYS = ['youtube_client_secret', 'meta_app_secret'];
+  'youtube_category', 'meta_app_id', 'meta_app_secret', 'public_base_url',
+  's3_bucket', 's3_region', 's3_endpoint', 's3_prefix', 's3_access_key_id', 's3_secret_access_key'];
+const SECRET_KEYS = ['youtube_client_secret', 'meta_app_secret', 's3_secret_access_key'];
 api.get('/settings', (c) => c.json(Object.fromEntries(SETTING_KEYS.map((k) => {
   const v = getSetting<any>(k, null);
   return [k, SECRET_KEYS.includes(k) ? (v ? '••••••••' : '') : v];
 }))));
 api.put('/settings', async (c) => {
   const body = await c.req.json();
+  // Members may pause and resume; everything else in Settings is the admin's.
+  if (currentUser(c).role !== 'admin' && Object.keys(body).some((k) => k !== 'paused')) return c.json({ error: 'Only the admin can change settings' }, 403);
   for (const [k, v] of Object.entries(body)) {
     if (!SETTING_KEYS.includes(k)) continue;
     if (SECRET_KEYS.includes(k) && v === '••••••••') continue;
@@ -316,6 +325,9 @@ api.post('/health/claude-test', async (c) => c.json(await testClaude()));
 api.post('/health/install-tools', (c) => c.json(installVideoTools()));
 api.get('/styles', (c) => c.json(listStyles()));
 api.get('/projects/:id/insights', (c) => c.json(performance(Number(c.req.param('id')))));
+api.post('/storage/test', async (c) => c.json({ ok: true, detail: await testS3() }));
+api.post('/storage/sync', async (c) => { const r = await syncAll(); const backup = await backupDatabase(); return c.json({ ok: true, ...r, backup }); });
+api.post('/storage/restore', async (c) => c.json({ ok: true, ...(await restoreAll()) }));
 api.get('/voices', (c) => c.json(VOICES));
 api.get('/voices/:id/preview', async (c) => {
   const file = await voicePreview(c.req.param('id'), Number(c.req.query('speed') || 0));

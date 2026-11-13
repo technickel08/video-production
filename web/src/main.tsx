@@ -14,12 +14,14 @@ import Approvals from './pages/Approvals';
 import Calendar from './pages/Calendar';
 import Channels from './pages/Channels';
 import Settings from './pages/Settings';
+import Login from './pages/Login';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <LiveProvider>
       <BrowserRouter>
         <Routes>
+          <Route path="login" element={<Login />} />
           <Route element={<Layout />}>
             <Route index element={<Home />} />
             <Route path="projects" element={<Projects />} />

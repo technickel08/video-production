@@ -14,6 +14,7 @@ process.env.IG_POLL_MS = '5';
 
 const seen: Record<string, any> = { ytUploads: [], igContainers: [] };
 let base = '';
+let fakeLoginEmail = '';
 
 const fake = http.createServer(async (req, res) => {
   const url = new URL(req.url!, base);
@@ -26,6 +27,7 @@ const fake = http.createServer(async (req, res) => {
     const f = new URLSearchParams(body);
     return json(f.get('grant_type') === 'refresh_token' ? { access_token: 'yt-at-2', expires_in: 3600 } : { access_token: 'yt-at', refresh_token: 'yt-rt', expires_in: 3600, scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly' });
   }
+  if (p === '/userinfo') return json({ email: fakeLoginEmail, email_verified: true });
   if (p === '/youtube/v3/channels') return json({ items: [{ id: 'UC123', snippet: { title: 'Test Channel' } }] });
   if (p === '/upload/youtube/v3/videos') {
     assert.equal(req.headers.authorization, 'Bearer yt-at');
@@ -56,7 +58,7 @@ let m: any;
 before(async () => {
   await new Promise<void>((r) => fake.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(fake.address() as any).port}`;
-  Object.assign(process.env, { YT_OAUTH_BASE: base, YT_API_BASE: base, YT_AUTH_BASE: base, GRAPH_BASE: base, FB_DIALOG_BASE: base });
+  Object.assign(process.env, { YT_OAUTH_BASE: base, YT_API_BASE: base, YT_AUTH_BASE: base, GRAPH_BASE: base, FB_DIALOG_BASE: base, GOOGLE_USERINFO_URL: `${base}/userinfo` });
   const db = await import('../src/db.ts');
   m = {
     db, pipeline: await import('../src/pipeline.ts'), publish: await import('../src/publish.ts'),
@@ -318,4 +320,140 @@ test('usage is added up from a step log, across several Claude runs', async () =
   fs.writeFileSync(f, ['{"type":"assistant"}', result(0.4, 'claude-sonnet-5-5'), 'not json', result(0.05, 'claude-haiku-5-5')].join('\n'));
   assert.deepEqual(usageOf(f), { cost_usd: 0.45, turns: 10, tokens_new: 200, tokens_cached: 2000, tokens_out: 100, model: 'sonnet-5-5' });
   assert.equal(usageOf(path.join(tmp, 'missing.jsonl')), null);
+});
+
+test('S3 storage: upload deliverables once, links, restore, delete and database backup', async () => {
+  // A minimal S3 stand-in: path-style PUT/GET/DELETE and ListObjectsV2, refusing unsigned requests.
+  const objects = new Map<string, Buffer>();
+  let unsigned = 0;
+  const s3 = http.createServer((req, res) => {
+    const u = new URL(req.url!, 'http://x');
+    const signed = /^AWS4-HMAC-SHA256 /.test(req.headers.authorization || '') || u.searchParams.has('X-Amz-Signature');
+    if (!signed) { unsigned++; res.writeHead(403).end('<Error><Code>AccessDenied</Code><Message>unsigned</Message></Error>'); return; }
+    const [, bucket, ...rest] = decodeURIComponent(u.pathname).split('/'); const key = rest.join('/');
+    if (bucket !== 'bkt') { res.writeHead(404).end('<Error><Code>NoSuchBucket</Code></Error>'); return; }
+    if (req.method === 'PUT') { const chunks: Buffer[] = []; req.on('data', (d) => chunks.push(d)); req.on('end', () => { objects.set(key, Buffer.concat(chunks)); res.writeHead(200).end(); }); return; }
+    if (req.method === 'DELETE') { objects.delete(key); res.writeHead(204).end(); return; }
+    if (!key) {
+      const prefix = u.searchParams.get('prefix') || '';
+      const items = [...objects].filter(([k]) => k.startsWith(prefix)).map(([k, b]) => `<Contents><Key>${k}</Key><LastModified>x</LastModified><Size>${b.length}</Size></Contents>`).join('');
+      res.writeHead(200).end(`<ListBucketResult>${items}</ListBucketResult>`); return;
+    }
+    const b = objects.get(key);
+    if (!b) { res.writeHead(404).end('<Error><Code>NoSuchKey</Code></Error>'); return; }
+    res.writeHead(200).end(b);
+  });
+  await new Promise<void>((r) => s3.listen(0, '127.0.0.1', r));
+  const st = await import('../src/storage.ts');
+  try {
+    assert.equal(st.s3Configured(), false);
+    for (const [k, v] of Object.entries({ s3_bucket: 'bkt', s3_endpoint: `http://127.0.0.1:${(s3.address() as any).port}`, s3_access_key_id: 'AKIATEST', s3_secret_access_key: 'secret', s3_prefix: 'va' })) m.db.setSetting(k, v);
+    assert.match(await st.testS3(), /Connected to bucket/);
+
+    const pid = Number(m.db.run(`INSERT INTO projects(name, niche, created_at) VALUES ('S3','x',?)`, new Date().toISOString()).lastInsertRowid);
+    const v = await makeFinishedVideo(pid);
+    const dir = m.paths.videoDir(pid, v);
+    fs.mkdirSync(path.join(dir, 'film')); fs.writeFileSync(path.join(dir, 'film', 'scratch.txt'), 'work');
+    assert.equal(await st.syncVideo(v), 2);                                   // final.mp4 + metadata.json; the film folder stays local
+    assert.equal(await st.syncVideo(v), 0);                                   // unchanged files are not sent again
+    const base = `va/projects/p${pid}/v${v}/`;
+    assert.deepEqual([...objects.keys()].filter((k) => k.startsWith(base)).sort(), [`${base}final.mp4`, `${base}metadata.json`]);
+
+    const link = await st.videoFileLink(v, 'final.mp4');
+    assert.match(link, /X-Amz-Signature=/);
+    const got = await fetch(link); assert.equal(got.status, 200);
+    assert.equal((await got.arrayBuffer()).byteLength, fs.statSync(path.join(dir, 'final.mp4')).size);
+
+    fs.rmSync(path.join(dir, 'metadata.json'));                               // lost locally → restored from S3
+    assert.match((await st.missingFileLink(v, 'metadata.json'))!, /metadata\.json\?/);
+    assert.equal(await st.missingFileLink(v, 'film/scratch.txt'), null);
+    assert.deepEqual(await st.restoreAll(), { files: 1 });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'metadata.json'), 'utf8')).title, 'Why Mars is red');
+
+    assert.match(await st.backupDatabase(), /^backups\/app-\d{4}-\d\d-\d\d\.db$/);
+    assert.ok(objects.get('va/backups/app-latest.db')!.subarray(0, 15).toString() === 'SQLite format 3');
+
+    await st.deleteVideoFiles(pid, v);
+    assert.equal([...objects.keys()].filter((k) => k.startsWith(base)).length, 0);
+    assert.equal(unsigned, 0);
+  } finally {
+    for (const k of ['s3_bucket', 's3_endpoint', 's3_access_key_id', 's3_secret_access_key', 's3_prefix']) m.db.setSetting(k, '');
+    s3.close();
+  }
+});
+
+test('sign-in: open until a password is set, then admin password and allowed Google accounts only', async () => {
+  const { Hono } = await import('hono');
+  const { api } = await import('../src/api.ts');
+  const { guard, clearAdminPassword } = await import('../src/auth.ts');
+  const app = new Hono(); app.use('/api/*', guard); app.use('/files/*', guard); app.route('/api', api);
+  const call = (p: string, o: { method?: string; json?: unknown; cookie?: string; origin?: string } = {}) => app.request(p, {
+    method: o.method ?? (o.json !== undefined ? 'POST' : 'GET'), body: o.json !== undefined ? JSON.stringify(o.json) : undefined,
+    headers: { ...(o.json !== undefined ? { 'content-type': 'application/json' } : {}), ...(o.cookie ? { cookie: o.cookie } : {}), ...(o.origin ? { origin: o.origin } : {}), host: 'localhost:4317' },
+  });
+  const cookieOf = (r: Response, name = 'va_session') => (r.headers.getSetCookie().find((c) => c.startsWith(`${name}=`)) ?? '').split(';')[0];
+  try {
+    // Open while no password exists.
+    assert.equal((await call('/api/overview')).status, 200);
+    assert.deepEqual(await (await call('/api/auth/me')).json(), { required: false, user: { email: 'local', role: 'admin' }, google: false });
+    assert.equal((await call('/api/auth/access', { method: 'PUT', json: { password: 'short' } })).status, 400);
+    assert.equal((await call('/api/auth/access', { method: 'PUT', json: { emails: ['a@b.co'] } })).status, 400);   // needs a password first
+
+    // Setting the password locks the app and keeps the setter signed in.
+    const set = await call('/api/auth/access', { method: 'PUT', json: { password: 'correct horse battery' } });
+    assert.equal(set.status, 200);
+    const admin = cookieOf(set); assert.ok(admin.length > 30);
+    assert.match(set.headers.getSetCookie().join(';'), /HttpOnly/);
+    assert.equal((await call('/api/overview')).status, 401);
+    assert.equal((await call('/files/1/final.mp4')).status, 401);
+    assert.equal((await call('/api/overview', { cookie: 'va_session=forged' })).status, 401);
+    assert.equal((await call('/api/overview', { cookie: admin })).status, 200);
+
+    // Password sign-in, and lock-out after repeated wrong tries.
+    assert.equal((await call('/api/auth/login', { json: { password: 'nope' } })).status, 401);
+    const login = await call('/api/auth/login', { json: { password: 'correct horse battery' } });
+    assert.equal(login.status, 200); assert.ok(cookieOf(login));
+    for (let i = 0; i < 5; i++) await call('/api/auth/login', { json: { password: 'nope' } });
+    assert.equal((await call('/api/auth/login', { json: { password: 'correct horse battery' } })).status, 429);
+
+    // A change sent from another site is refused even with a valid session.
+    assert.equal((await call('/api/settings', { method: 'PUT', json: { paused: false }, cookie: admin, origin: 'https://evil.example' })).status, 403);
+    assert.equal((await call('/api/settings', { method: 'PUT', json: { paused: false }, cookie: admin, origin: 'http://localhost:4317' })).status, 200);
+
+    // Google sign-in: only allowed, verified emails get in, as members.
+    assert.equal((await call('/api/auth/access', { method: 'PUT', json: { emails: ['Friend@Example.com'] }, cookie: admin })).status, 200);
+    assert.equal((await (await call('/api/auth/me')).json()).google, true);
+    const viaGoogle = async (email: string) => {
+      fakeLoginEmail = email;
+      const start = await call('/api/auth/google/start');
+      const to = new URL(start.headers.get('location')!);
+      assert.equal(to.searchParams.get('scope'), 'openid email');
+      assert.match(to.searchParams.get('redirect_uri')!, /\/api\/auth\/google\/callback$/);
+      return call(`/api/auth/google/callback?code=abc&state=${to.searchParams.get('state')}`, { cookie: cookieOf(start, 'va_login_state') });
+    };
+    const stranger = await viaGoogle('stranger@example.com');
+    assert.match(decodeURIComponent(stranger.headers.get('location')!), /^\/login\?error=stranger@example\.com is not allowed/);
+    assert.equal(cookieOf(stranger), '');
+    const forged = await call('/api/auth/google/callback?code=abc&state=whatever');
+    assert.match(decodeURIComponent(forged.headers.get('location')!), /Sign-in expired/);
+    const friend = await viaGoogle('friend@example.com');
+    assert.equal(friend.headers.get('location'), '/');
+    const member = cookieOf(friend);
+    assert.deepEqual((await (await call('/api/auth/me', { cookie: member })).json()).user, { email: 'friend@example.com', role: 'member' });
+
+    // Members work with videos but cannot touch settings, keys, storage or access.
+    assert.equal((await call('/api/videos', { cookie: member })).status, 200);
+    assert.equal((await call('/api/settings', { method: 'PUT', json: { paused: false }, cookie: member })).status, 200);
+    assert.equal((await call('/api/settings', { method: 'PUT', json: { youtube_client_secret: 'x' }, cookie: member })).status, 403);
+    assert.equal((await call('/api/auth/access', { cookie: member })).status, 403);
+    assert.equal((await call('/api/storage/test', { method: 'POST', cookie: member })).status, 403);
+    assert.equal((await call('/api/oauth/youtube/start', { cookie: member })).status, 403);
+
+    // Removing the email ends that person's access at once; signing out ends a session.
+    await call('/api/auth/access', { method: 'PUT', json: { emails: [] }, cookie: admin });
+    assert.equal((await call('/api/videos', { cookie: member })).status, 401);
+    await call('/api/auth/logout', { method: 'POST', cookie: admin });
+    assert.equal((await call('/api/overview', { cookie: admin })).status, 401);
+  } finally { clearAdminPassword(); m.db.setSetting('login_emails', []); }
+  assert.equal((await call('/api/overview')).status, 200);
 });

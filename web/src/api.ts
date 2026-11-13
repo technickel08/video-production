@@ -6,6 +6,7 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
     body: json !== undefined ? JSON.stringify(json) : rest.body,
   });
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && !path.startsWith('/auth/') && window.location.pathname !== '/login') { window.location.assign('/login'); return new Promise<T>(() => {}); }
   if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
   return body as T;
 }

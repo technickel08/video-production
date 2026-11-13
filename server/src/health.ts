@@ -8,6 +8,7 @@ import { which, toolPath, systemFfmpeg } from './tools.ts';
 import { LIB_DIR, SKILL_DIR, DATA_DIR } from './paths.ts';
 import { PUBLISHERS } from './publish.ts';
 import { changed } from './events.ts';
+import { s3Configured } from './storage.ts';
 import { bin as cloudflaredBin } from 'cloudflared';
 
 const pexec = promisify(execFile);
@@ -59,6 +60,7 @@ export async function health(): Promise<Check[]> {
       detail: `core ${pk.core ? '✓' : '✗'} · voice ${pk.voice ? '✓' : '✗'} · music ${pk.music ? '✓' : '✗'}`, fix: 'Press “Install video tools” (needs ffmpeg and Python first).' },
     { id: 'youtube', label: 'YouTube app keys', needed: 'Publishing to YouTube', ok: PUBLISHERS.youtube.configured(), detail: PUBLISHERS.youtube.configured() ? 'set' : 'not set', fix: 'Settings → Connections → YouTube.' },
     { id: 'meta', label: 'Meta (Instagram) app keys', needed: 'Publishing to Instagram', ok: PUBLISHERS.instagram.configured(), detail: PUBLISHERS.instagram.configured() ? 'set' : 'not set', fix: 'Settings → Connections → Instagram.' },
+    { id: 's3', label: 'Cloud storage (S3)', needed: 'Backups and running on a server', ok: s3Configured(), detail: s3Configured() ? `bucket ${getSetting('s3_bucket', '') || process.env.S3_BUCKET}` : 'not set up — files are kept on this disk only', fix: 'Settings → Cloud storage.' },
     { id: 'cloudflared', label: 'Cloudflare tunnel tool', needed: 'Publishing to Instagram', ok: fs.existsSync(cloudflaredBin), detail: fs.existsSync(cloudflaredBin) ? 'installed' : 'downloads automatically on first Instagram post' },
     { id: 'mock', label: 'Test mode off', needed: 'Real videos', ok: !mock, detail: mock ? 'Test mode is on: stages write sample files and a test-pattern video without using Claude' : 'off' },
   ];

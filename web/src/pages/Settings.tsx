@@ -96,6 +96,8 @@ export default function Settings() {
               <input className="input" defaultValue={s.public_base_url ?? ''} placeholder="Leave empty to use a temporary Cloudflare link"
                 onBlur={(e) => e.target.value !== (s.public_base_url ?? '') && save({ public_base_url: e.target.value })} />
               <p className="mt-1 text-xs text-zinc-500">Instagram downloads each video from a public link. By default a temporary Cloudflare link is opened only while posting, serving only that one file.</p></div>} />
+          <StorageSection s={s} onSave={save} />
+          <AccessSection />
         </div>
       </div>
     </>
@@ -120,6 +122,94 @@ function KeySection({ title, fields, s, onSave, steps, extra }: { title: string;
       </div>
       <Button className="mt-3" variant="primary" size="sm" onClick={() => onSave(vals)}>Save keys</Button>
       {extra}
+    </Section>
+  );
+}
+
+interface Access { hasPassword: boolean; emails: string[]; redirectUri: string; googleClientId: string; googleSecretSet: boolean; usesYoutubeKeys: boolean; googleReady: boolean }
+function AccessSection() {
+  const { data: a, reload } = useData<Access>('/auth/access');
+  const [pw, setPw] = useState(''); const [pw2, setPw2] = useState('');
+  const [emails, setEmails] = useState<string | null>(null);
+  const [gid, setGid] = useState<string | null>(null); const [gsecret, setGsecret] = useState('');
+  const { busy, run } = useAction();
+  if (!a) return null;
+  const emailText = emails ?? a.emails.join('\n');
+  const savePw = () => run('pw', async () => {
+    if (pw.length < 10) throw new Error('Use at least 10 characters');
+    if (pw !== pw2) throw new Error('The two passwords do not match');
+    await put('/auth/access', { password: pw }); setPw(''); setPw2(''); reload();
+    toast(a.hasPassword ? 'Admin password changed' : 'Admin password set — sign-in is now required');
+  });
+  const saveGoogle = () => run('g', async () => {
+    await put('/auth/access', { emails: emailText.split(/[\s,;]+/).filter(Boolean), ...(gid !== null ? { googleClientId: gid } : {}), ...(gsecret ? { googleClientSecret: gsecret } : {}) });
+    setEmails(null); setGsecret(''); reload(); toast('Google sign-in saved');
+  });
+  return (
+    <Section title="Access" description={a.hasPassword ? `Sign-in is required.${a.googleReady ? ` Google sign-in is on for ${a.emails.length} email(s).` : ''}` : 'Open: anyone who can reach this address can use the dashboard. Set an admin password before putting it on a server.'}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><label className="label">{a.hasPassword ? 'New admin password' : 'Admin password'}</label>
+          <input className="input" type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 10 characters" /></div>
+        <div><label className="label">Repeat it</label>
+          <input className="input" type="password" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} /></div>
+      </div>
+      <Button className="mt-3" variant="primary" size="sm" disabled={!pw} loading={busy === 'pw'} onClick={savePw}>{a.hasPassword ? 'Change password' : 'Set password and require sign-in'}</Button>
+      <p className="mt-2 text-xs text-zinc-500">The admin can do everything, including these settings. Lost it? On the machine itself run <code>npm run admin-password -- 'new-password'</code>.</p>
+
+      <div className="mt-5 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+        <div className="text-sm font-medium">Google sign-in for other people</div>
+        <p className="mb-3 text-xs text-zinc-500">People on this list can sign in with their Google account. They can make, review and publish videos, but cannot change settings, keys, channels or this list.</p>
+        <label className="label">Allowed Google emails (one per line)</label>
+        <textarea className="input min-h-20 font-mono" value={emailText} onChange={(e) => setEmails(e.target.value)} placeholder="name@gmail.com" disabled={!a.hasPassword} />
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div><label className="label">Google client ID (optional)</label>
+            <input className="input font-mono" value={gid ?? a.googleClientId} onChange={(e) => setGid(e.target.value)} placeholder={a.usesYoutubeKeys ? 'Using your YouTube keys' : 'Not set'} autoComplete="off" /></div>
+          <div><label className="label">Google client secret (optional)</label>
+            <input className="input font-mono" type="password" value={gsecret} onChange={(e) => setGsecret(e.target.value)} placeholder={a.googleSecretSet ? '••••••••' : a.usesYoutubeKeys ? 'Using your YouTube keys' : 'Not set'} autoComplete="off" /></div>
+        </div>
+        <p className="mt-2 text-xs text-zinc-500">Leave both empty to reuse the YouTube keys above. Either way, add this to the client's “Authorized redirect URIs” in Google Cloud: <Copyable text={a.redirectUri} /></p>
+        <Button className="mt-3" size="sm" disabled={!a.hasPassword} loading={busy === 'g'} onClick={saveGoogle}>Save Google sign-in</Button>
+        {!a.hasPassword && <span className="ml-2 text-xs text-zinc-500">Set an admin password first.</span>}
+      </div>
+    </Section>
+  );
+}
+
+function StorageSection({ s, onSave }: { s: Record<string, any>; onSave: (p: Record<string, any>, msg?: string) => void }) {
+  const fields: [string, string, string][] = [
+    ['s3_bucket', 'Bucket name', 'my-video-autopilot'], ['s3_region', 'Region', 'us-east-1'],
+    ['s3_access_key_id', 'Access key ID', 'Leave empty on EC2 with an IAM role'], ['s3_secret_access_key', 'Secret access key', 'Leave empty on EC2 with an IAM role'],
+    ['s3_prefix', 'Folder in the bucket', 'video-autopilot'], ['s3_endpoint', 'Endpoint (only for non-AWS S3)', 'https://<account>.r2.cloudflarestorage.com'],
+  ];
+  const [vals, setVals] = useState(() => Object.fromEntries(fields.map(([k]) => [k, s[k] ?? ''])));
+  const [open, setOpen] = useState(!s.s3_bucket);
+  const { busy, run } = useAction();
+  const call = (id: string, path: string, done: (r: any) => string) => run(id, async () => { toast(done(await post(path))); });
+  return (
+    <Section title="Cloud storage (S3)" description={s.s3_bucket ? `Using bucket “${s.s3_bucket}”.` : 'Not set up — files are kept on this disk only.'}>
+      <button onClick={() => setOpen(!open)} className="mb-3 flex items-center gap-1 text-sm font-medium text-accent-600">
+        <ChevronDown className={`size-4 transition ${open ? '' : '-rotate-90'}`} />What this does and how to set it up
+      </button>
+      {open && <ol className="mb-4 list-decimal space-y-2 pl-5 text-sm text-zinc-600 dark:text-zinc-300">
+        <li>Each finished step's files (research, script, production plan, final video, poster, captions) are copied to your bucket, and the database is backed up there every 6 hours.</li>
+        <li>Instagram downloads videos from a time-limited S3 link, so the temporary Cloudflare tunnel is no longer used.</li>
+        <li>Create a <b>private</b> bucket in the AWS S3 console (keep “Block all public access” on).</li>
+        <li><b>On EC2:</b> attach an IAM role to the instance that allows <code>s3:PutObject</code>, <code>s3:GetObject</code>, <code>s3:DeleteObject</code> and <code>s3:ListBucket</code> on that bucket, and leave both key fields empty. <b>Elsewhere:</b> create an access key for an IAM user with the same permissions and paste it here.</li>
+        <li>Save, then press <b>Test connection</b>.</li>
+      </ol>}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {fields.map(([k, label, ph]) => (
+          <div key={k}><label className="label">{label}</label>
+            <input className="input font-mono" type={k.includes('secret') ? 'password' : 'text'} placeholder={ph} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })} autoComplete="off" /></div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button variant="primary" size="sm" onClick={() => onSave(Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, String(v).trim()])))}>Save</Button>
+        <Button size="sm" disabled={!s.s3_bucket} loading={busy === 'test'} onClick={() => call('test', '/storage/test', (r) => r.detail)}>Test connection</Button>
+        <Button size="sm" disabled={!s.s3_bucket} loading={busy === 'sync'} onClick={() => call('sync', '/storage/sync', (r) => `Uploaded ${r.files} file(s) from ${r.videos} video(s) and backed up the database`)}>Upload everything now</Button>
+        <Button size="sm" disabled={!s.s3_bucket} loading={busy === 'restore'} onClick={() => call('restore', '/storage/restore', (r) => `Restored ${r.files} missing file(s) from S3`)}>Restore missing files</Button>
+      </div>
+      <p className="mt-2 text-xs text-zinc-500">The working film folder and step logs stay on this disk. The file that encrypts your channel sign-ins (<code>data/secret.key</code>) is never uploaded.</p>
     </Section>
   );
 }
