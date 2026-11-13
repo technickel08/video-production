@@ -22,7 +22,7 @@ Then:
 
 1. **Sign Claude Code in** over SSH: run `claude`, type `/login`, open the link it prints, and paste the code back. This uses your subscription, the same as on your Mac.
 2. Open `https://your-domain` and sign in with the admin password.
-3. **Settings → Setup checks**: press *Install video tools* and fix anything still red. The check wants **ffmpeg 7 or newer**; if your Ubuntu version ships an older one, upgrade the instance's Ubuntu release or install a newer ffmpeg build.
+3. **Settings → Setup checks**: press *Install video tools* and fix anything still red. The check wants **ffmpeg 7 or newer**. Ubuntu 24.04 ships version 6, so the setup script installs a current build into `/usr/local/bin`; to do that on its own, run `bash scripts/install-ffmpeg-linux.sh` and restart the app.
 4. **Settings → Cloud storage**: enter the bucket and region, leave the key fields empty (the instance role is used), and press *Test connection*.
 
 ## Moving your data from the Mac

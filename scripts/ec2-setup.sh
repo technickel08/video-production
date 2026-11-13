@@ -23,6 +23,9 @@ sudo apt-get update -y
 sudo apt-get install -y curl git ca-certificates gnupg ffmpeg python3 python3-venv python3-pip build-essential \
   debian-keyring debian-archive-keyring apt-transport-https fonts-noto fonts-noto-cjk fonts-noto-color-emoji
 
+echo "==> ffmpeg 7+ (Ubuntu 24.04 ships version 6)"
+bash "$APP_DIR/scripts/install-ffmpeg-linux.sh"
+
 echo "==> Node.js 24"
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 24 ]; then
   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -

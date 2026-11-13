@@ -21,7 +21,7 @@ export default function Settings() {
     <>
       <PageHeader title="Settings" subtitle="Setup checks, automation and platform connections." />
       <div className="space-y-4">
-        <Section title="Setup checks" description="What this Mac needs. Each line says which part of the system depends on it."
+        <Section title="Setup checks" description="What this machine needs. Each line says which part of the system depends on it."
           actions={<div className="flex gap-2">
             <Button size="sm" loading={busy === 'claude'} onClick={() => run('claude', async () => { const r = await post('/health/claude-test'); toast(r.ok ? 'Claude is working' : r.detail, r.ok ? 'ok' : 'error'); })}>Test Claude</Button>
             <Button size="sm" variant="primary" loading={!!h?.install && !h.install.done} onClick={() => run('install', () => post('/health/install-tools'))}>Install video tools</Button>

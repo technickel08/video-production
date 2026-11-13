@@ -52,7 +52,7 @@ export async function health(): Promise<Check[]> {
     { id: 'claude_login', label: 'Claude logged in (Pro)', needed: 'Research, script, video, review', ok: !!login?.ok,
       detail: login ? `${login.detail} (tested ${new Date(login.at).toLocaleString()})` : 'not tested yet — press “Test Claude”',
       fix: 'Run `claude` in Terminal and log in with your Claude Pro account, then press “Test Claude”.' },
-    { id: 'ffmpeg', label: 'ffmpeg 7+', needed: 'Video production', ok: ffMajor >= 7, detail: ffV ? ffV.slice(0, 60) : 'not installed (a bundled copy is used for checks only)', fix: 'brew install ffmpeg' },
+    { id: 'ffmpeg', label: 'ffmpeg 7+', needed: 'Video production', ok: ffMajor >= 7, detail: ffV ? `${ffV.slice(0, 60)}${ffMajor < 7 ? ' — installed, but version 7 or newer is needed' : ''}` : 'not installed (a bundled copy is used for checks only)', fix: process.platform === 'darwin' ? 'brew install ffmpeg' : 'bash scripts/install-ffmpeg-linux.sh' },
     { id: 'python', label: 'Python 3.11+ or uv', needed: 'Voice and music', ok: !!(py || uv), detail: py || (uv ? `uv ${uv}` : 'not found (system Python is too old)'), fix: 'brew install uv' },
     { id: 'skill', label: 'lemo-opuscar skill', needed: 'Video production', ok: fs.existsSync(path.join(SKILL_DIR, 'SKILL.md')), detail: SKILL_DIR },
     { id: 'library', label: 'Style library', needed: 'Video production', ok: fs.existsSync(path.join(LIB_DIR, 'AGENTS.md')), detail: LIB_DIR, fix: 'Press “Install video tools”.' },
