@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { voiceBrief } from './voices.ts';
-import { performanceText } from './insights.ts';
+import { playbookText } from './learning.ts';
+import { skillStyleText, styleInfo, extraSkillsText, STYLE_PREFIX } from './skills.ts';
 import path from 'node:path';
 import { all, getSetting, run, now, type Project, type Video } from './db.ts';
 import { PROMPTS_DIR, SKILL_DIR, LIB_DIR, videoDir } from './paths.ts';
@@ -40,6 +41,7 @@ function projectVars(p: Project, v: Video) {
     duration_sec: p.duration_sec, aspect_ratio: p.aspect_ratio, notes: p.notes || 'none',
     voice: voiceBrief(p), music: p.music ? (p.music_mood.trim() ? `yes — mood: ${p.music_mood.trim()}` : 'yes') : 'no', captions: yes(p.captions),
     styles: p.styles.length ? p.styles.join(', ') : 'any',
+    focus: p.focus.trim() ? `- Current focus for this channel (chosen from past results): ${p.focus.trim()} — prefer topics within it.` : '',
     revision: v.note ? `## Revision requested\nThe previous attempt was not accepted. Fix these points:\n${v.note}\n` : '',
   };
 }
@@ -67,7 +69,7 @@ async function research(ctx: StageCtx): Promise<StageResult> {
     fs.writeFileSync(path.join(dir, 'research.md'), `# Research\n\n**Chosen:** ${topic}\n\n- Idea 1 — 8/10\n- Idea 2 — 7/10\n\nSources: https://example.com\n`);
     fs.writeFileSync(path.join(dir, 'topics.json'), JSON.stringify({ chosen: { topic, angle: 'Surprising fact', working_title: topic, why: 'mock' }, ideas: [], facts: [] }, null, 2));
   } else {
-    const prompt = template('research', { ...projectVars(p, v), performance: performanceText(p.id), past_topics: past.map((x) => `- ${x.topic}`).join('\n') || '- none yet' });
+    const prompt = template('research', { ...projectVars(p, v), performance: playbookText(p.id), past_topics: past.map((x) => `- ${x.topic}`).join('\n') || '- none yet' });
     const r = await claude(ctx, prompt, ['WebSearch', 'WebFetch', 'Read', 'Write'], 20 * 60_000);
     if (!r.ok) return r;
   }
@@ -88,7 +90,10 @@ async function script(ctx: StageCtx): Promise<StageResult> {
       style: p.styles[0] || listStyles()[0]?.slug || 'swiss-motion', thumbnail_text: 'Did you know?', narration_words: 100,
     }, null, 2));
   } else {
-    const vars = { ...projectVars(p, v), style_list: styleListText(p.styles), performance: performanceText(p.id) };
+    // "Try it on my next video": this video uses the chosen skill; otherwise the project's styles plus added skills.
+    const forced = p.next_style && (p.next_style.startsWith(STYLE_PREFIX) ? skillStyleText([p.next_style]) : styleListText([p.next_style]));
+    const styleList = forced || [styleListText(p.styles.filter((s) => !s.startsWith(STYLE_PREFIX))), skillStyleText(p.styles)].filter(Boolean).join('\n');
+    const vars = { ...projectVars(p, v), ...(forced ? { styles: p.next_style! } : {}), style_list: styleList, performance: playbookText(p.id) };
     const r = await claude(ctx, template('script', vars), ['Read', 'Write'], 15 * 60_000);
     if (!r.ok) return r;
     // An independent editor scores the hook and title; a weak one is rewritten once before anyone sees it.
@@ -112,6 +117,11 @@ async function script(ctx: StageCtx): Promise<StageResult> {
   const meta = readJson(path.join(dir, 'metadata.json'));
   if (!meta?.title || !meta?.style) return { ok: false, error: 'script did not produce a valid metadata.json (title and style are required)' };
   run('UPDATE videos SET title=?, updated_at=? WHERE id=?', String(meta.title).slice(0, 120), now(), v.id);
+  // Record how this video was made, so the analyst can compare like with like later.
+  meta.made_with = { voice_name: p.voice_name || 'auto', voice_speed: p.voice_speed || 'auto', voice_style: p.voice_style, music_mood: p.music_mood,
+    target_sec: p.duration_sec, focus: p.focus, production_step: p.production_step, trial: !!p.next_style };
+  fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify(meta, null, 2));
+  if (p.next_style) run('UPDATE projects SET next_style=NULL WHERE id=?', p.id);
   return { ok: true };
 }
 
@@ -124,8 +134,9 @@ async function production(ctx: StageCtx): Promise<StageResult> {
     fs.writeFileSync(path.join(dir, 'production.md'), `# Production — ${v.title || v.topic}\n\n## Look\nWarm, hand-drawn.\n\n| Colour | Hex | Use |\n|---|---|---|\n| Saffron | #E8912D | Hero |\n| Indigo | #27306B | Night |\n\n## Cast\n| Role | Look | Costume |\n|---|---|---|\n| Narrator figure | Tall, calm | Indigo robe |\n\n## Scenes\n| # | Time | Set | Action |\n|---|---|---|---|\n| 1 | 0–3s | Court | Hook |\n`);
     fs.writeFileSync(path.join(dir, 'production.json'), JSON.stringify({ palette: [{ name: 'Saffron', hex: '#E8912D', use: 'Hero' }], cast: [], sets: [], scenes: [{ n: 1, time: '0–3s', set: 'Court', cast: [], action: 'Hook' }], rules: [] }, null, 2));
   } else {
-    const prompt = template('production', { ...projectVars(p, v), style: meta.style || 'any', lib_dir: LIB_DIR });
-    const r = await claude(ctx, prompt, ['Read', 'Write', 'Glob'], 15 * 60_000, { addDirs: [LIB_DIR] });
+    const info = styleInfo(meta.style || 'any');
+    const prompt = template('production', { ...projectVars(p, v), style: meta.style || 'any', style_label: info.label, style_rules: info.rules, lib_dir: LIB_DIR, performance: playbookText(p.id) });
+    const r = await claude(ctx, prompt, ['Read', 'Write', 'Glob'], 15 * 60_000, { addDirs: [LIB_DIR, ...(info.skill?.path ? [info.skill.path] : [])] });
     if (!r.ok) return r;
   }
   const bible = path.join(dir, 'production.md');
@@ -182,8 +193,12 @@ async function produce(ctx: StageCtx): Promise<StageResult> {
     await ffmpeg(['-ss', '1', '-i', path.join(filmDir, 'film.mp4'), '-frames:v', '1', path.join(filmDir, 'poster.jpg')]);
     fs.writeFileSync(path.join(filmDir, 'TREATMENT.md'), `# Treatment (mock)\n\nStyle: ${meta.style}\n`);
   } else {
-    const prompt = template('produce', {
-      ...projectVars(p, v), style: meta.style || 'any', skill_dir: SKILL_DIR, lib_dir: LIB_DIR,
+    const info = styleInfo(meta.style || 'any');
+    const extra = extraSkillsText(p.extra_skills);
+    const prompt = template(info.skill ? 'produce-skill' : 'produce', {
+      ...projectVars(p, v), style: meta.style || 'any', skill_dir: info.skill?.path ?? SKILL_DIR, lib_dir: LIB_DIR,
+      skill_name: info.skill?.name ?? 'lemo-opuscar', skill_source: info.skill?.repo ?? '', skill_version: info.skill?.ref?.slice(0, 7) ?? '',
+      extra_skills: extra.text,
       film_dir: filmDir, video_dir: dir, resolution: RESOLUTION[p.aspect_ratio] || p.aspect_ratio,
       resume: resumeNote(filmDir, !!v.note),
       production: p.production_step && fs.existsSync(path.join(dir, 'production.md'))
@@ -191,7 +206,7 @@ async function produce(ctx: StageCtx): Promise<StageResult> {
         : '',
     });
     const r = await claude(ctx, prompt, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite'],
-      getSetting('produce_timeout_min', 180) * 60_000, { addDirs: [SKILL_DIR, LIB_DIR] });
+      getSetting('produce_timeout_min', 180) * 60_000, { addDirs: [info.skill?.path ?? SKILL_DIR, LIB_DIR, ...extra.dirs] });
     if (!r.ok) return r;
   }
 

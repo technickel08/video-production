@@ -44,6 +44,8 @@ export default function Settings() {
         <Section title="Automation">
           <Toggle checked={!!s.paused} onChange={(v) => save({ paused: v }, v ? 'Automation paused' : 'Automation resumed')} label="Pause everything" hint="Stops starting new steps and publishing. Running steps finish." />
           <Toggle checked={!!s.mock_mode} onChange={(v) => save({ mock_mode: v })} label="Test mode" hint="Run the whole pipeline with sample files and a test-pattern video, without using Claude. Good for trying the dashboard." />
+          <Toggle checked={s.scout_enabled !== false} onChange={(v) => save({ scout_enabled: v })} label="Skill scout"
+            hint={`Every ${s.scout_every_days ?? 14} days, search the web for better video skills and tell you about them in What's new. Nothing is added without your click.`} />
           <Toggle checked={s.notifications !== false} onChange={(v) => save({ notifications: v })} label="Mac notifications" hint="When a video needs approval, is published, or fails." />
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <div><label className="label">Claude model</label>
@@ -54,13 +56,13 @@ export default function Settings() {
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <div><div className="text-sm font-medium">Model for each step</div>
                   <div className="text-xs text-zinc-500">The Video step uses 75–90% of a run, so a lighter model there saves the most. Script and Production are short, so a stronger model there costs little.</div></div>
-                <Button size="sm" onClick={() => save({ model_research: 'sonnet', model_script: 'opus', model_production: 'opus', model_produce: 'sonnet', model_check: 'sonnet' }, 'Recommended models set')}>Use recommended</Button>
+                <Button size="sm" onClick={() => save({ model_research: 'sonnet', model_script: 'opus', model_production: 'opus', model_produce: 'sonnet', model_check: 'sonnet', model_analyst: 'sonnet', model_scout: 'opus' }, 'Recommended models set')}>Use recommended</Button>
               </div>
-              <div className="grid gap-3 sm:grid-cols-5">
-                {([['research', 'Research'], ['script', 'Script'], ['production', 'Production'], ['produce', 'Video'], ['check', 'Check']] as const).map(([k, label]) => (
+              <div className="grid gap-3 sm:grid-cols-4">
+                {([['research', 'Research'], ['script', 'Script'], ['production', 'Production'], ['produce', 'Video'], ['check', 'Check'], ['analyst', 'Analyst'], ['scout', 'Skill scout']] as const).map(([k, label]) => (
                   <div key={k}><label className="label">{label}</label>
                     <select className="input" value={s[`model_${k}`] ?? ''} onChange={(e) => save({ [`model_${k}`]: e.target.value })}>
-                      <option value="">Same as above</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
+                      <option value="">{k === 'scout' ? 'Opus (default)' : 'Same as above'}</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option>
                     </select></div>
                 ))}
               </div>

@@ -88,6 +88,33 @@ CREATE TABLE IF NOT EXISTS stats (
   PRIMARY KEY (post_id, date)
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS metrics (
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  checkpoint TEXT NOT NULL,
+  taken_at TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (post_id, checkpoint)
+);
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+  link TEXT, ref TEXT, created_at TEXT NOT NULL, read_at TEXT
+);
+CREATE TABLE IF NOT EXISTS proposals (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  level TEXT NOT NULL, title TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+  confidence TEXT NOT NULL DEFAULT 'low', changes TEXT NOT NULL, before TEXT,
+  status TEXT NOT NULL, auto INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, decided_at TEXT
+);
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, kind TEXT NOT NULL,
+  repo TEXT NOT NULL, subpath TEXT NOT NULL DEFAULT '', ref TEXT, card TEXT NOT NULL,
+  status TEXT NOT NULL, path TEXT, found_at TEXT NOT NULL, installed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, project_id INTEGER, status TEXT NOT NULL,
+  started_at TEXT NOT NULL, finished_at TEXT, error TEXT, log_path TEXT, cost_usd REAL
+);
 `);
 
 // Additive migrations for databases created by earlier versions.
@@ -105,6 +132,11 @@ addColumn('videos', 'archived_from', `TEXT`);
 for (const [c, t] of [['cost_usd', 'REAL'], ['turns', 'INTEGER'], ['tokens_new', 'INTEGER'], ['tokens_cached', 'INTEGER'], ['tokens_out', 'INTEGER'], ['model', 'TEXT']]) addColumn('stage_runs', c, t);
 addColumn('projects', 'production_step', `INTEGER NOT NULL DEFAULT 1`);
 addColumn('projects', 'review_steps', `INTEGER NOT NULL DEFAULT 1`);
+addColumn('projects', 'adapt_mode', `TEXT NOT NULL DEFAULT 'ask'`);
+addColumn('projects', 'focus', `TEXT NOT NULL DEFAULT ''`);
+addColumn('projects', 'analyzed_at', `TEXT`);
+addColumn('projects', 'next_style', `TEXT`);
+addColumn('projects', 'extra_skills', `TEXT NOT NULL DEFAULT '[]'`);
 
 export const VISIBILITIES = ['public', 'unlisted', 'private'] as const;
 export type Visibility = (typeof VISIBILITIES)[number];
@@ -122,6 +154,7 @@ export interface Project {
   auto_publish: boolean; active: boolean; created_at: string; channel_ids: number[]; visibility: Visibility;
   voice_name: string; voice_speed: number; voice_style: string; music_mood: string;
   production_step: boolean; review_steps: boolean;
+  adapt_mode: 'ask' | 'auto'; focus: string; analyzed_at: string | null; next_style: string | null; extra_skills: string[];
 }
 export interface Video {
   id: number; project_id: number; title: string; topic: string; stage: Stage; status: Status;
@@ -138,7 +171,7 @@ const bool = (v: unknown) => v === 1 || v === true;
 export function toProject(r: Row): Project {
   return {
     ...r,
-    styles: JSON.parse(r.styles), post_times: JSON.parse(r.post_times), post_days: JSON.parse(r.post_days),
+    styles: JSON.parse(r.styles), post_times: JSON.parse(r.post_times), post_days: JSON.parse(r.post_days), extra_skills: JSON.parse(r.extra_skills || '[]'),
     voice: bool(r.voice), music: bool(r.music), captions: bool(r.captions), autopilot: bool(r.autopilot),
     auto_publish: bool(r.auto_publish), active: bool(r.active),
     production_step: bool(r.production_step), review_steps: bool(r.review_steps),

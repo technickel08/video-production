@@ -84,6 +84,7 @@ export const currentUser = (c: Context): User => (c.get('user' as never) as User
 const ADMIN_ONLY: [string, RegExp][] = [
   ['*', /^\/api\/storage\//], ['*', /^\/api\/install-tools/], ['GET', /^\/api\/oauth\/[^/]+\/start/],
   ['DELETE', /^\/api\/channels\//], ['DELETE', /^\/api\/projects\//], ['*', /^\/api\/auth\/access/],
+  ['POST', /^\/api\/skills\/(scout|\d+\/install)/], ['DELETE', /^\/api\/skills\//],
 ];
 
 /** Guards /api and /files. */

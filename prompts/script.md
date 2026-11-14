@@ -7,6 +7,7 @@ You are the script step of an automated short-video pipeline. Nobody will answer
 - Voiceover: {{voice}} · Music: {{music}} · Captions: {{captions}}
 - Allowed visual styles (Lemo-Opuscar folder names; "any" means choose freely): {{styles}}
 - Notes from the owner: {{notes}}
+{{focus}}
 
 ## Input
 Read `research.md` and `topics.json` in the current folder. Use only facts found there.
@@ -36,7 +37,16 @@ Write a script for one video on the chosen topic:
   "hashtags": ["#…", "… 3 to 8 total"],
   "style": "<style folder name>",
   "thumbnail_text": "≤ 5 words",
-  "narration_words": 0
+  "narration_words": 0,
+  "tags": {
+    "topic_type": "one or two words, e.g. discovery, biography, battle, myth, mystery, invention, festival",
+    "timeliness": "timely (tied to news, an anniversary or a current event) or evergreen",
+    "hook_type": "shocking-fact | question | mystery | contrarian | number | in-media-res | visual-reveal",
+    "title_pattern": "how | why | what | number | statement | question | name-drop",
+    "emotion": "awe | curiosity | suspense | pride | outrage | humour | nostalgia",
+    "angle": "the angle in under 8 words"
+  }
 }
 ```
+The `tags` describe this video honestly so the channel can learn what works; pick the closest value from each list.
 Write in {{language}} except JSON keys and the style folder name. Finish with one sentence giving the title.

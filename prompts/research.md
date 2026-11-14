@@ -7,6 +7,7 @@ You are the research step of an automated short-video pipeline. Nobody will answ
 - Language: {{language}}
 - Format: {{format}}, about {{duration_sec}} seconds, aspect ratio {{aspect_ratio}}
 - Notes from the owner: {{notes}}
+{{focus}}
 
 {{revision}}
 {{performance}}

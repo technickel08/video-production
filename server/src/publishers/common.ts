@@ -14,7 +14,13 @@ export interface PostCtx {
   visibility: 'public' | 'unlisted' | 'private';
 }
 export interface PublishResult { externalId: string; url: string; published: boolean; }
-export interface Stats { views?: number; likes?: number; comments?: number; }
+export interface Stats {
+  views?: number; likes?: number; comments?: number; shares?: number; saves?: number; reach?: number; subs_gained?: number;
+  /** Share of the video watched on average (0–100) and average seconds watched. */
+  avg_view_pct?: number; avg_view_sec?: number;
+}
+/** Slower, per-video detail fetched only at checkpoints. */
+export interface Deep { retention?: number[]; comments?: string[] }
 
 export const tokensOf = <T>(c: Channel) => decrypt<T>(c.tokens);
 export const saveTokens = (channelId: number, tokens: unknown) => run('UPDATE channels SET tokens=? WHERE id=?', encrypt(tokens), channelId);

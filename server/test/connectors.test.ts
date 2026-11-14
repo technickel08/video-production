@@ -4,6 +4,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,17 @@ process.env.IG_POLL_MS = '5';
 const seen: Record<string, any> = { ytUploads: [], igContainers: [] };
 let base = '';
 let fakeLoginEmail = '';
+const FAKE_SHA = 'abcdef0123456789abcdef0123456789abcdef01';
+/** A GitHub-style source archive: <repo>-<sha>/ with a README at the root and the skill in skills/demo. */
+function fakeTarball() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'va-tar-'));
+  const top = path.join(root, `video-skill-${FAKE_SHA}`);
+  fs.mkdirSync(path.join(top, 'skills', 'demo'), { recursive: true });
+  fs.writeFileSync(path.join(top, 'README.md'), 'repo readme');
+  fs.writeFileSync(path.join(top, 'skills', 'demo', 'SKILL.md'), '# Demo skill\n');
+  execFileSync('tar', ['-czf', path.join(root, 'out.tar.gz'), '-C', root, `video-skill-${FAKE_SHA}`]);
+  return path.join(root, 'out.tar.gz');
+}
 
 const fake = http.createServer(async (req, res) => {
   const url = new URL(req.url!, base);
@@ -36,6 +48,16 @@ const fake = http.createServer(async (req, res) => {
   }
   if (p.startsWith('/upload-session/')) { seen.ytBytes = body.length; return json({ id: `yt-${p.split('/').pop()}` }); }
   if (p === '/upload/youtube/v3/thumbnails/set') return json({});
+  if (p === '/v2/reports') {
+    if (url.searchParams.get('dimensions') === 'video') {
+      const ids = url.searchParams.get('filters')!.replace('video==', '').split(',');
+      return json({ columnHeaders: ['video', 'averageViewDuration', 'averageViewPercentage', 'subscribersGained', 'shares'].map((name) => ({ name })), rows: ids.map((id) => [id, 27, 61.5, 3, 4]) });
+    }
+    return json({ rows: Array.from({ length: 100 }, (_, i) => [(i + 1) / 100, Math.round((1 - i / 200) * 100) / 100 - 0.045]) });
+  }
+  if (p === '/youtube/v3/commentThreads') return json({ items: ['More of these please', 'Source?'].map((t) => ({ snippet: { topLevelComment: { snippet: { textDisplay: t } } } })) });
+  if (p === '/repos/example/video-skill/commits/HEAD') return json({ sha: FAKE_SHA });
+  if (p === `/example/video-skill/tar.gz/${FAKE_SHA}`) { res.writeHead(200, { 'content-type': 'application/gzip' }); res.end(fs.readFileSync(fakeTarball())); return; }
   if (p === '/youtube/v3/videos') return json({ items: url.searchParams.get('id')!.split(',').map((id) => ({ id, statistics: { viewCount: '120', likeCount: '9', commentCount: '2' } })) });
 
   // Meta Graph
@@ -50,7 +72,7 @@ const fake = http.createServer(async (req, res) => {
   if (p === '/v21.0/c1') return json({ status_code: 'FINISHED' });
   if (p === '/v21.0/ig1/media_publish') return json({ id: 'm1' });
   if (p === '/v21.0/m1') return json({ permalink: 'https://instagram.com/p/m1' });
-  if (p === '/v21.0/m1/insights') return json({ data: [{ values: [{ value: 340 }] }] });
+  if (p === '/v21.0/m1/insights') return json({ data: [{ name: 'views', values: [{ value: 340 }] }, { name: 'reach', values: [{ value: 300 }] }, { name: 'ig_reels_avg_watch_time', values: [{ value: 12400 }] }] });
   json({ error: { message: `unexpected ${req.method} ${p}` } }, 404);
 });
 
@@ -58,7 +80,7 @@ let m: any;
 before(async () => {
   await new Promise<void>((r) => fake.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(fake.address() as any).port}`;
-  Object.assign(process.env, { YT_OAUTH_BASE: base, YT_API_BASE: base, YT_AUTH_BASE: base, GRAPH_BASE: base, FB_DIALOG_BASE: base, GOOGLE_USERINFO_URL: `${base}/userinfo` });
+  Object.assign(process.env, { YT_OAUTH_BASE: base, YT_API_BASE: base, YT_AUTH_BASE: base, GRAPH_BASE: base, FB_DIALOG_BASE: base, GOOGLE_USERINFO_URL: `${base}/userinfo`, YT_ANALYTICS_BASE: base, GITHUB_API_BASE: base, GITHUB_CODELOAD_BASE: base });
   const db = await import('../src/db.ts');
   m = {
     db, pipeline: await import('../src/pipeline.ts'), publish: await import('../src/publish.ts'),
@@ -456,4 +478,121 @@ test('sign-in: open until a password is set, then admin password and allowed Goo
     assert.equal((await call('/api/overview', { cookie: admin })).status, 401);
   } finally { clearAdminPassword(); m.db.setSetting('login_emails', []); }
   assert.equal((await call('/api/overview')).status, 200);
+});
+
+// ─── Learning loop ───────────────────────────────────────────────────────────
+function publishedVideo(pid: number, title: string, views: number, daysAgo: number, extra: Record<string, unknown> = {}) {
+  const v = m.pipeline.createVideo(pid).id as number;
+  m.db.updateVideo(v, { title, stage: 'done', status: 'published' });
+  fs.writeFileSync(path.join(m.paths.videoDir(pid, v), 'metadata.json'), JSON.stringify({ title, style: 'ink', hook: `Hook of ${title}`, tags: { timeliness: 'timely' } }));
+  const ch = m.db.get(`SELECT id FROM channels WHERE platform='youtube' LIMIT 1`)?.id
+    ?? Number(m.db.run(`INSERT INTO channels(platform, external_id, name, tokens, status, created_at) VALUES ('youtube','learn','L','x','connected',?)`, new Date().toISOString()).lastInsertRowid);
+  const at = new Date(Date.now() - daysAgo * 86400_000).toISOString();
+  const post = Number(m.db.run(`INSERT INTO posts(video_id, channel_id, platform, status, scheduled_at, published_at, external_id) VALUES (?,?,'youtube','published',?,?,?)`, v, ch, at, at, `ext${v}`).lastInsertRowid);
+  m.db.run(`INSERT INTO metrics(post_id, checkpoint, taken_at, data) VALUES (?,?,?,?)`, post, '24h', new Date().toISOString(), JSON.stringify({ views, avg_view_pct: 40, ...extra }));
+  m.db.run(`INSERT INTO metrics(post_id, checkpoint, taken_at, data) VALUES (?,?,?,?)`, post, 'latest', new Date().toISOString(), JSON.stringify({ views, avg_view_pct: 40, ...extra }));
+  return v;
+}
+
+test('stats: watch time, retention and comments are frozen at the 24h / 3d / 7d checkpoints', async () => {
+  const pid = Number(m.db.run(`INSERT INTO projects(name, niche, created_at) VALUES ('Stats','x',?)`, new Date().toISOString()).lastInsertRowid);
+  const v = m.pipeline.createVideo(pid).id as number;
+  m.db.updateVideo(v, { stage: 'done', status: 'published', title: 'Measured' });
+  const ch = m.db.get(`SELECT id FROM channels WHERE platform='youtube' AND status='connected' AND external_id='UC123'`).id;
+  const at = new Date(Date.now() - 4 * 86400_000).toISOString();     // 4 days old: past 24h and 3d, not 7d
+  const post = Number(m.db.run(`INSERT INTO posts(video_id, channel_id, platform, status, scheduled_at, published_at, external_id) VALUES (?,?,'youtube','published',?,?,'ytdeep')`, v, ch, at, at).lastInsertRowid);
+  await m.publish.statsTick(true);
+  const rows = Object.fromEntries(m.db.all('SELECT checkpoint, data FROM metrics WHERE post_id=?', post).map((r: any) => [r.checkpoint, JSON.parse(r.data)]));
+  assert.deepEqual(Object.keys(rows).sort(), ['24h', '3d', 'latest']);
+  assert.equal(rows.latest.views, 120); assert.equal(rows.latest.avg_view_pct, 61.5); assert.equal(rows.latest.subs_gained, 3);
+  assert.equal(rows['3d'].retention.length, 20); assert.equal(rows['3d'].retention[0], 0.94);
+  assert.deepEqual(rows['3d'].comments, ['More of these please', 'Source?']);
+  await m.publish.statsTick(true);                                      // checkpoints are frozen, not overwritten
+  assert.equal(m.db.all('SELECT * FROM metrics WHERE post_id=?', post).length, 3);
+});
+
+test('analyst: playbook, confident tweaks apply, shifts wait for approval, undo, owner edits survive', async () => {
+  const L = await import('../src/learning.ts');
+  const inbox = await import('../src/inbox.ts');
+  m.db.setSetting('mock_mode', true);
+  try {
+    const pid = Number(m.db.run(`INSERT INTO projects(name, niche, post_times, created_at) VALUES ('Learn','science','["18:00"]',?)`, new Date().toISOString()).lastInsertRowid);
+    publishedVideo(pid, 'Algae', 190, 3); publishedVideo(pid, 'Lock', 8, 4);
+    assert.equal(L.analysisDue(m.db.getProject(pid)), false);         // 2 published: too early
+    publishedVideo(pid, 'Telescope', 20, 1);
+    assert.equal(L.analysisDue(m.db.getProject(pid)), true);
+
+    const before = inbox.unreadCount();
+    const r = (await L.analyse(pid))!;
+    assert.equal(r.applied.length, 1); assert.equal(r.applied[0].level, 'tweak');
+    assert.deepEqual(m.db.getProject(pid).post_times, ['19:00']);      // medium-confidence tweak applied by itself
+    assert.equal(r.pending.length, 1); assert.equal(r.pending[0].level, 'shift');
+    assert.equal(m.db.getProject(pid).focus, '');                     // "ask" mode: shift waits
+    assert.equal(inbox.unreadCount() - before, 3);                    // playbook + applied + proposal
+    assert.match(L.playbookText(pid), /Lean towards topics like “Algae”/);
+    assert.equal(L.analysisDue(m.db.getProject(pid)), false);         // just analysed
+
+    L.applyProposal(r.pending[0].id);
+    assert.equal(m.db.getProject(pid).focus, 'Discoveries in the news this month');
+    assert.deepEqual(L.approvalStats(pid), { approved: 1, dismissed: 0 });
+    L.undoProposal(r.pending[0].id);
+    assert.equal(m.db.getProject(pid).focus, '');
+    assert.throws(() => L.applyProposal(r.pending[0].id), /already undone/);
+
+    // Owner strikes a lesson and pins one; a new analysis keeps both decisions.
+    L.setLessonStatus(pid, 'L1', 'struck');
+    const pb = L.readPlaybook(pid)!; pb.lessons.push({ id: 'L9', text: 'Always cite a source on screen', status: 'pinned' });
+    fs.writeFileSync(path.join(L.learningDir(pid), 'playbook.json'), JSON.stringify(pb));
+    m.db.run('UPDATE projects SET analyzed_at=NULL, adapt_mode=? WHERE id=?', 'auto', pid);
+    const r2 = (await L.analyse(pid))!;
+    const again = L.readPlaybook(pid)!;
+    assert.equal(again.lessons.find((l: any) => l.id === 'L1')!.status, 'struck');
+    assert.equal(again.lessons.find((l: any) => l.id === 'L9')!.status, 'pinned');
+    assert.doesNotMatch(L.playbookText(pid), /Lean towards/);
+    assert.match(L.playbookText(pid), /Always cite a source on screen \(set by the owner/);
+    assert.equal(r2.applied.find((a: any) => a.level === 'shift')?.auto, true);   // "Fully automatic": shift applied
+    assert.equal(m.db.getProject(pid).focus, 'Discoveries in the news this month');
+
+    // Proposals outside their level's fields, or with wild values, are refused.
+    const p = m.db.getProject(pid);
+    assert.throws(() => L.validateChanges('tweak', { niche: 'cooking' }, p), /cannot be changed by a tweak/);
+    assert.throws(() => L.validateChanges('tweak', { duration_sec: 400 }, p), /out of range/);
+    assert.throws(() => L.validateChanges('tweak', { voice_name: 'nobody' }, p), /unknown voice/);
+    assert.deepEqual(L.validateChanges('pivot', { niche: 'Space news' }, p), { niche: 'Space news' });
+  } finally { m.db.setSetting('mock_mode', false); }
+});
+
+test('skill scout: finds are announced, Add pins an exact GitHub version, and the skill becomes a style', async () => {
+  const S = await import('../src/skills.ts');
+  const inbox = await import('../src/inbox.ts');
+  m.db.setSetting('mock_mode', true);
+  try {
+    const r = await S.runScout();
+    assert.equal(r.found, 1);
+    const found = S.listSkills().find((s: any) => s.slug === 'demo-video-skill')!;
+    assert.equal(found.status, 'found'); assert.equal(found.repo, 'https://github.com/example/video-skill');
+    assert.match(inbox.listNotes(5).map((n: any) => n.title).join('|'), /New visual skill found: Demo video skill/);
+    assert.equal((await S.runScout()).found, 0);                      // known finds are not announced twice
+
+    const installed = await S.installSkill(found.id);
+    const ipath = installed.path!;
+    assert.equal(installed.status, 'installed'); assert.equal(installed.ref, FAKE_SHA);
+    assert.ok(ipath.endsWith(`demo-video-skill@${FAKE_SHA.slice(0, 7)}`));
+    assert.equal(fs.readFileSync(path.join(ipath, 'SKILL.md'), 'utf8'), '# Demo skill\n');
+    assert.ok(!fs.existsSync(path.join(ipath, '..', 'README.md')));   // only the skill folder is kept
+
+    assert.ok(S.skillStyles().some((s: any) => s.slug === 'skill:demo-video-skill' && s.category === 'Other skills'));
+    assert.match(S.styleInfo('skill:demo-video-skill').rules, /SKILL\.md/);
+    assert.match(S.skillStyleText([]), /skill:demo-video-skill/);
+
+    const pid = Number(m.db.run(`INSERT INTO projects(name, niche, styles, created_at) VALUES ('Sk','x','["skill:demo-video-skill"]',?)`, new Date().toISOString()).lastInsertRowid);
+    S.trySkill(found.id, pid);
+    assert.equal(m.db.getProject(pid).next_style, 'skill:demo-video-skill');
+    S.removeSkill(found.id);
+    assert.ok(!fs.existsSync(ipath));
+    assert.deepEqual(m.db.getProject(pid).styles, []); assert.equal(m.db.getProject(pid).next_style, null);
+
+    assert.throws(() => S.parseRepo('https://evil.example/x/y'), /Only public GitHub/);
+    assert.throws(() => S.parseRepo('https://github.com/../etc'), /Only public GitHub/);
+  } finally { m.db.setSetting('mock_mode', false); }
 });

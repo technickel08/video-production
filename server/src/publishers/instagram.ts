@@ -81,9 +81,18 @@ export async function stats(c: Channel, ids: string[]): Promise<Record<string, S
     try {
       const m = await jsonFetch(`${GRAPH()}/${id}?${new URLSearchParams({ fields: 'like_count,comments_count', access_token })}`);
       out[id] = { likes: m.like_count, comments: m.comments_count };
-      const ins = await jsonFetch(`${GRAPH()}/${id}/insights?${new URLSearchParams({ metric: 'views', access_token })}`).catch(() => null);
-      const views = ins?.data?.[0]?.values?.[0]?.value;
-      if (views !== undefined) out[id].views = views;
+      // Reels insights; fall back to fewer metrics if Meta rejects one of them for this media type.
+      let ins: any = null;
+      for (const metric of ['views,reach,saved,shares,ig_reels_avg_watch_time', 'views,reach,saved,shares', 'views']) {
+        ins = await jsonFetch(`${GRAPH()}/${id}/insights?${new URLSearchParams({ metric, access_token })}`).catch(() => null);
+        if (ins) break;
+      }
+      const val = (name: string) => ins?.data?.find((d: any) => d.name === name)?.values?.[0]?.value ?? ins?.data?.find((d: any) => d.name === name)?.total_value?.value;
+      const v = val('views'); if (v !== undefined) out[id].views = v;
+      const reach = val('reach'); if (reach !== undefined) out[id].reach = reach;
+      const saved = val('saved'); if (saved !== undefined) out[id].saves = saved;
+      const shares = val('shares'); if (shares !== undefined) out[id].shares = shares;
+      const avg = val('ig_reels_avg_watch_time'); if (avg !== undefined) out[id].avg_view_sec = Math.round(avg / 100) / 10;
     } catch {}
   }
   return out;

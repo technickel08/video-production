@@ -15,6 +15,11 @@ import { s3Configured, testS3, syncAll, restoreAll, backupDatabase, deleteVideoF
 import { videoDir, PROJECTS_DIR, localPath } from './paths.ts';
 import { describeEvent } from './claude.ts';
 import { auth, currentUser } from './auth.ts';
+import { listNotes, unreadCount, markRead } from './inbox.ts';
+import { buildDataset, readPlaybook, listProposals, applyProposal, dismissProposal, undoProposal, setLessonStatus, approvalStats, requestAnalysis, analysisRequested, learningDir, learningTick } from './learning.ts';
+import { listSkills, installSkill, removeSkill, dismissSkill, trySkill, skillStyles, latestScoutReport, requestScout, scoutTick, installedSkills } from './skills.ts';
+import { recentJobs } from './jobs.ts';
+import { sideBusy } from './pipeline.ts';
 
 export const api = new Hono();
 
@@ -36,6 +41,8 @@ api.get('/overview', (c) => {
   return c.json({
     inProgress: count(`status IN ('queued','running','waiting_usage')`),
     awaiting: count(`status IN ('awaiting_approval','awaiting_review')`),
+    unread: unreadCount(),
+    proposals: get<{ n: number }>(`SELECT COUNT(*) n FROM proposals WHERE status='pending'`)!.n,
     scheduled: count(`status IN ('scheduled','ready_to_publish')`),
     published: count(`status='published'`),
     failed: count(`status='failed'`),
@@ -55,7 +62,7 @@ api.get('/overview', (c) => {
 // ─── Projects ────────────────────────────────────────────────────────────────
 const PROJECT_FIELDS = ['name', 'niche', 'audience', 'language', 'format', 'duration_sec', 'aspect_ratio', 'styles', 'voice', 'music', 'captions',
   'notes', 'post_times', 'post_days', 'daily_cap', 'autopilot', 'auto_publish', 'active', 'visibility',
-  'voice_name', 'voice_speed', 'voice_style', 'music_mood', 'production_step', 'review_steps'] as const;
+  'voice_name', 'voice_speed', 'voice_style', 'music_mood', 'production_step', 'review_steps', 'adapt_mode', 'focus', 'extra_skills'] as const;
 
 function projectValues(body: any) {
   const out: Record<string, any> = {};
@@ -65,6 +72,7 @@ function projectValues(body: any) {
     out[k] = Array.isArray(v) ? JSON.stringify(v) : typeof v === 'boolean' ? (v ? 1 : 0) : v;
   }
   if (out.name !== undefined && !String(out.name).trim()) throw new Error('Project name is required');
+  if (out.adapt_mode !== undefined && !['ask', 'auto'].includes(out.adapt_mode)) throw new Error('Adaptation must be ask or auto');
   if (out.visibility !== undefined && !['public', 'unlisted', 'private'].includes(out.visibility)) throw new Error('Visibility must be public, unlisted or private');
   if (out.voice_speed !== undefined && !(Number(out.voice_speed) === 0 || (Number(out.voice_speed) >= 0.7 && Number(out.voice_speed) <= 1.3))) throw new Error('Voice speed must be between 0.7 and 1.3');
   if (out.voice_name !== undefined && out.voice_name && !VOICE_IDS.has(out.voice_name)) throw new Error(`Unknown voice "${out.voice_name}"`);
@@ -87,7 +95,8 @@ function releaseWaiting(projectId: number) {
 }
 function projectWithCounts(p: any) {
   const counts = all<{ status: string; n: number }>('SELECT status, COUNT(*) n FROM videos WHERE project_id=? GROUP BY status', p.id);
-  return { ...p, counts: Object.fromEntries(counts.map((x) => [x.status, x.n])), next_slot: nextSlot(p) };
+  return { ...p, counts: Object.fromEntries(counts.map((x) => [x.status, x.n])), next_slot: nextSlot(p), adapt_stats: approvalStats(p.id),
+    pending_proposals: get<{ n: number }>(`SELECT COUNT(*) n FROM proposals WHERE project_id=? AND status='pending'`, p.id)!.n };
 }
 
 api.get('/projects', (c) => c.json(all('SELECT * FROM projects ORDER BY created_at DESC').map(toProject).map(projectWithCounts)));
@@ -299,7 +308,7 @@ api.get('/oauth/:platform/callback', async (c) => {
 });
 
 // ─── Settings & health ───────────────────────────────────────────────────────
-const SETTING_KEYS = ['paused', 'mock_mode', 'notifications', 'claude_model', 'model_research', 'model_script', 'model_production', 'model_produce', 'model_check', 'claude_path', 'produce_timeout_min', 'youtube_client_id', 'youtube_client_secret',
+const SETTING_KEYS = ['paused', 'mock_mode', 'notifications', 'claude_model', 'model_research', 'model_script', 'model_production', 'model_produce', 'model_check', 'model_analyst', 'model_scout', 'scout_enabled', 'scout_every_days', 'claude_path', 'produce_timeout_min', 'youtube_client_id', 'youtube_client_secret',
   'youtube_category', 'meta_app_id', 'meta_app_secret', 'public_base_url',
   's3_bucket', 's3_region', 's3_endpoint', 's3_prefix', 's3_access_key_id', 's3_secret_access_key'];
 const SECRET_KEYS = ['youtube_client_secret', 'meta_app_secret', 's3_secret_access_key'];
@@ -323,7 +332,54 @@ api.put('/settings', async (c) => {
 api.get('/health', async (c) => c.json({ checks: await health(), install: installState() }));
 api.post('/health/claude-test', async (c) => c.json(await testClaude()));
 api.post('/health/install-tools', (c) => c.json(installVideoTools()));
-api.get('/styles', (c) => c.json(listStyles()));
+api.get('/styles', (c) => c.json([...listStyles(), ...skillStyles()]));
+
+// ─── What's new ──────────────────────────────────────────────────────────────
+api.get('/notifications', (c) => c.json(listNotes().map((n) => {
+  // Attach the current state of whatever the note is about, so its buttons match (e.g. already approved).
+  const [kind, id] = (n.ref ?? '').split(':');
+  const state = kind === 'proposal' ? get<{ status: string }>('SELECT status FROM proposals WHERE id=?', Number(id))?.status
+    : kind === 'skill' ? get<{ status: string }>('SELECT status FROM skills WHERE id=?', Number(id))?.status : undefined;
+  return { ...n, state: state ?? null };
+})));
+api.post('/notifications/read', async (c) => { const b = await c.req.json().catch(() => ({})); markRead(Array.isArray(b.ids) ? b.ids.map(Number) : undefined); return c.json({ ok: true }); });
+
+// ─── Learning ────────────────────────────────────────────────────────────────
+api.get('/learning/:pid', (c) => {
+  const pid = Number(c.req.param('pid')); const p = getProject(pid);
+  if (!p) return c.json({ error: 'not found' }, 404);
+  let md = ''; try { md = fs.readFileSync(path.join(learningDir(pid), 'playbook.md'), 'utf8'); } catch {}
+  const data = buildDataset(pid);
+  return c.json({
+    project: { id: p.id, name: p.name, adapt_mode: p.adapt_mode, focus: p.focus, analyzed_at: p.analyzed_at },
+    playbook: readPlaybook(pid), playbook_md: md, proposals: listProposals(pid), stats: approvalStats(pid),
+    medians: data.medians, measured: data.measured, published: data.published,
+    videos: data.videos.map((v) => ({ id: v.id, title: v.title, published_at: v.published_at, style: v.style, tags: v.tags, hook: v.hook, platforms: v.platforms })),
+    jobs: recentJobs('analyst', pid, 5), queued: analysisRequested(pid), running: sideBusy() === `analyst:${pid}`,
+    analytics_error: getSetting<string | null>('yt_analytics_error', null), analytics_missing: getSetting('yt_analytics_missing', false),
+  });
+});
+api.post('/learning/:pid/analyse', (c) => { const pid = Number(c.req.param('pid')); requestAnalysis(pid); void learningTick(); return c.json({ ok: true }); });
+api.put('/learning/:pid/lessons/:lid', async (c) => {
+  const b = await c.req.json();
+  if (!['active', 'pinned', 'struck'].includes(b.status)) throw new Error('status must be active, pinned or struck');
+  setLessonStatus(Number(c.req.param('pid')), c.req.param('lid'), b.status); return c.json({ ok: true });
+});
+api.post('/proposals/:id/approve', (c) => { applyProposal(Number(c.req.param('id'))); return c.json({ ok: true }); });
+api.post('/proposals/:id/dismiss', (c) => { dismissProposal(Number(c.req.param('id'))); return c.json({ ok: true }); });
+api.post('/proposals/:id/undo', (c) => { undoProposal(Number(c.req.param('id'))); return c.json({ ok: true }); });
+
+// ─── Skills ──────────────────────────────────────────────────────────────────
+api.get('/skills', (c) => c.json({
+  skills: listSkills().filter((s) => s.status !== 'skipped'), report: latestScoutReport(), jobs: recentJobs('scout', undefined, 5),
+  running: sideBusy() === 'scout', last_run: getSetting('scout_last_run', null), enabled: getSetting('scout_enabled', true), every_days: getSetting('scout_every_days', 14),
+}));
+api.get('/skills/installed', (c) => c.json(installedSkills().map((s) => ({ id: s.id, slug: s.slug, name: s.name, kind: s.kind, summary: s.card.summary }))));
+api.post('/skills/scout', (c) => { requestScout(); void scoutTick(); return c.json({ ok: true }); });
+api.post('/skills/:id/install', async (c) => c.json(await installSkill(Number(c.req.param('id')))));
+api.post('/skills/:id/dismiss', (c) => { dismissSkill(Number(c.req.param('id'))); return c.json({ ok: true }); });
+api.post('/skills/:id/try', async (c) => { const b = await c.req.json(); trySkill(Number(c.req.param('id')), Number(b.projectId)); return c.json({ ok: true }); });
+api.delete('/skills/:id', (c) => { removeSkill(Number(c.req.param('id'))); return c.json({ ok: true }); });
 api.get('/projects/:id/insights', (c) => c.json(performance(Number(c.req.param('id')))));
 api.post('/storage/test', async (c) => c.json({ ok: true, detail: await testS3() }));
 api.post('/storage/sync', async (c) => { const r = await syncAll(); const backup = await backupDatabase(); return c.json({ ok: true, ...r, backup }); });

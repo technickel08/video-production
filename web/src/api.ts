@@ -31,6 +31,8 @@ export interface Project {
   post_times: string[]; post_days: number[]; daily_cap: number; autopilot: boolean; auto_publish: boolean; active: boolean;
   channel_ids: number[]; counts?: Record<string, number>; next_slot?: string; created_at: string; visibility: Visibility;
   voice_name: string; voice_speed: number; voice_style: string; music_mood: string; production_step: boolean; review_steps: boolean;
+  adapt_mode: 'ask' | 'auto'; focus: string; analyzed_at: string | null; next_style: string | null; extra_skills: string[];
+  adapt_stats?: { approved: number; dismissed: number }; pending_proposals?: number;
 }
 export interface Video {
   id: number; project_id: number; project_name?: string; title: string; topic: string; stage: Stage; status: Status;
@@ -49,6 +51,21 @@ export interface VideoDetail extends Video {
 export interface Channel { id: number; platform: 'youtube' | 'instagram'; name: string; status: string; projects: number[]; created_at: string; }
 export interface Voice { id: string; name: string; gender: 'Female' | 'Male'; accent: string; lang: string; hint?: string; }
 export interface Insight { id: number; title: string; hook: string; style: string; views: number; likes: number; comments: number; hook_score: number | null; }
+export interface Note { id: number; kind: string; title: string; body: string; link: string | null; ref: string | null; created_at: string; read_at: string | null; state: string | null; }
+export interface Lesson { id: string; text: string; evidence?: string; confidence?: 'low' | 'medium' | 'high'; status: 'active' | 'pinned' | 'struck' }
+export interface Proposal { id: number; level: 'tweak' | 'shift' | 'pivot'; title: string; reason: string; evidence: string; confidence: string; changes: Record<string, any>; before: Record<string, any> | null; status: string; auto: boolean; created_at: string; decided_at: string | null; }
+export interface Metric { views?: number; likes?: number; comments?: number | string[]; shares?: number; saves?: number; reach?: number; subs_gained?: number; avg_view_pct?: number; avg_view_sec?: number; retention?: number[]; taken_at?: string; }
+export interface LearningData {
+  project: { id: number; name: string; adapt_mode: 'ask' | 'auto'; focus: string; analyzed_at: string | null };
+  playbook: { summary?: string; data_quality?: string; lessons: Lesson[]; unknowns?: string[]; next_tests?: string[]; updated_at?: string } | null;
+  playbook_md: string; proposals: Proposal[]; stats: { approved: number; dismissed: number }; measured: number; published: number;
+  medians: Record<string, Record<string, { views: number | null; avg_view_pct: number | null }>>;
+  videos: { id: number; title: string; published_at: string; style: string | null; tags: Record<string, string> | null; hook: string | null; platforms: Record<string, Record<string, Metric>> }[];
+  jobs: { id: number; status: string; started_at: string; finished_at: string | null; error: string | null; cost_usd: number | null }[];
+  queued: boolean; running: boolean; analytics_error: string | null; analytics_missing: boolean;
+}
+export interface SkillCard { summary?: string; makes_full_video?: boolean; better_because?: string; sample_url?: string; runs?: string; network?: string; needs_keys?: string[]; license?: string; last_commit?: string; stars?: number; risk?: 'low' | 'medium' | 'high'; risk_notes?: string; recommendation?: 'add' | 'watch' | 'skip'; }
+export interface SkillRow { id: number; slug: string; name: string; kind: string; repo: string; subpath: string; ref: string | null; card: SkillCard; status: string; path: string | null; found_at: string; installed_at: string | null; }
 export interface Style { slug: string; name: string; category: string; }
 
 export const STAGE_LABEL: Record<Stage, string> = {

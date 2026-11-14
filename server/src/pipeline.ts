@@ -24,6 +24,20 @@ const MAX_ERROR_RETRIES = 2;
 let busyVideo: number | null = null;
 export const busy = () => busyVideo;
 
+/**
+ * Background Claude jobs (analyst, skill scout) share the one worker with video steps, so two Claude runs
+ * never compete for the same usage allowance. Returns false when the worker is taken; the caller retries later.
+ */
+let sideJob: string | null = null;
+export const sideBusy = () => sideJob;
+export async function runSideJob(name: string, fn: () => Promise<void>): Promise<boolean> {
+  if (busyVideo !== null || sideJob || usageGate() || getSetting('paused', false)) return false;
+  sideJob = name;
+  try { await fn(); } finally { sideJob = null; }
+  return true;
+}
+export const setUsageWait = (retryAt: string) => setSettingSafe('usage_wait_until', retryAt);
+
 export function createVideo(projectId: number): Video {
   const r = run(`INSERT INTO videos(project_id, stage, status, created_at, updated_at) VALUES (?, 'research', 'queued', ?, ?)`, projectId, now(), now());
   const v = getVideo(Number(r.lastInsertRowid))!;
@@ -53,7 +67,7 @@ function usageGate(): boolean {
 }
 
 export async function tick() {
-  if (busyVideo !== null || usageGate()) return;
+  if (busyVideo !== null || sideJob || usageGate()) return;
   const v = nextJob();
   if (!v) return;
   const project = getProject(v.project_id)!;

@@ -1,11 +1,13 @@
 import fs from 'node:fs';
-import { getSetting } from '../db.ts';
-import { jsonFetch, redirectUri, saveTokens, tokensOf, upsertChannel, caption, type Channel, type PostCtx, type PublishResult, type Stats } from './common.ts';
+import { getSetting, setSetting } from '../db.ts';
+import { jsonFetch, redirectUri, saveTokens, tokensOf, upsertChannel, caption, type Channel, type PostCtx, type PublishResult, type Stats, type Deep } from './common.ts';
 
 const OAUTH = () => process.env.YT_OAUTH_BASE || 'https://oauth2.googleapis.com';
 const AUTH = () => process.env.YT_AUTH_BASE || 'https://accounts.google.com';
 const API = () => process.env.YT_API_BASE || 'https://www.googleapis.com';
-const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly'];
+const ANALYTICS = () => process.env.YT_ANALYTICS_BASE || 'https://youtubeanalytics.googleapis.com';
+const ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/yt-analytics.readonly';
+const SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.readonly', ANALYTICS_SCOPE];
 
 interface Tokens { access_token: string; refresh_token: string; expires_at: number; }
 const creds = () => ({ id: getSetting('youtube_client_id', ''), secret: getSetting('youtube_client_secret', '') });
@@ -29,6 +31,8 @@ export async function handleCallback(code: string): Promise<number[]> {
   if (!granted.includes('youtube.upload')) throw new Error('Upload permission was not granted. Press Connect again and tick every permission box on Google’s consent screen.');
   if (!t.refresh_token) throw new Error('Google did not return a long-lived sign-in. Remove the app at myaccount.google.com/connections, then press Connect again.');
   const tokens: Tokens = { access_token: t.access_token, refresh_token: t.refresh_token, expires_at: Date.now() + t.expires_in * 1000 };
+  // Watch-time numbers need the Analytics permission; uploads work without it.
+  setSetting('yt_analytics_missing', !granted.includes('yt-analytics.readonly'));
   const ch = await jsonFetch(`${API()}/youtube/v3/channels?part=snippet&mine=true`, { headers: { authorization: `Bearer ${tokens.access_token}` } })
     .catch((e) => { throw new Error(`Could not read your YouTube channel (${e.message}). Make sure “YouTube Data API v3” is enabled in your Google Cloud project.`); });
   if (!ch.items?.length) throw new Error('The Google account you picked has no YouTube channel. If your channel is a Brand Account, press Connect again and pick the channel (not your personal account) on Google’s account chooser.');
@@ -92,5 +96,50 @@ export async function stats(c: Channel, ids: string[]): Promise<Record<string, S
   const r = await jsonFetch(`${API()}/youtube/v3/videos?part=statistics&id=${ids.join(',')}`, { headers: { authorization: `Bearer ${token}` } });
   const out: Record<string, Stats> = {};
   for (const i of r.items ?? []) out[i.id] = { views: Number(i.statistics.viewCount ?? 0), likes: Number(i.statistics.likeCount ?? 0), comments: Number(i.statistics.commentCount ?? 0) };
+
+  // How much of each video people watched (YouTube Analytics; its numbers trail by a day or two).
+  try {
+    const q = new URLSearchParams({
+      ids: 'channel==MINE', startDate: '2020-01-01', endDate: new Date().toISOString().slice(0, 10),
+      metrics: 'averageViewDuration,averageViewPercentage,subscribersGained,shares', dimensions: 'video', filters: `video==${ids.join(',')}`,
+    });
+    const a = await jsonFetch(`${ANALYTICS()}/v2/reports?${q}`, { headers: { authorization: `Bearer ${token}` } });
+    const cols: string[] = (a.columnHeaders ?? []).map((h: any) => h.name);
+    for (const row of a.rows ?? []) {
+      const r2 = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+      const o = (out[r2.video] ??= {});
+      o.avg_view_sec = Number(r2.averageViewDuration); o.avg_view_pct = Number(r2.averageViewPercentage);
+      o.subs_gained = Number(r2.subscribersGained); o.shares = Number(r2.shares);
+    }
+    setSetting('yt_analytics_error', null);
+  } catch (e: any) {
+    // Usually: the channel was connected before this permission existed, or the API is not enabled in Google Cloud.
+    setSetting('yt_analytics_error', String(e.message).slice(0, 300));
+  }
+  return out;
+}
+
+/** Retention curve (share of viewers still watching at 20 points through the video) and the top comments. */
+export async function deep(c: Channel, id: string): Promise<Deep> {
+  const token = await accessToken(c);
+  const auth = { headers: { authorization: `Bearer ${token}` } };
+  const out: Deep = {};
+  try {
+    const q = new URLSearchParams({
+      ids: 'channel==MINE', startDate: '2020-01-01', endDate: new Date().toISOString().slice(0, 10),
+      metrics: 'audienceWatchRatio', dimensions: 'elapsedVideoTimeRatio', filters: `video==${id}`,
+    });
+    const a = await jsonFetch(`${ANALYTICS()}/v2/reports?${q}`, auth);
+    const rows: [number, number][] = (a.rows ?? []).map((r: any[]) => [Number(r[0]), Number(r[1])]);
+    if (rows.length) out.retention = Array.from({ length: 20 }, (_, i) => {
+      const at = (i + 1) / 20; const r = rows.reduce((b, x) => (Math.abs(x[0] - at) < Math.abs(b[0] - at) ? x : b));
+      return Math.round(r[1] * 100) / 100;
+    });
+  } catch {}
+  try {
+    const q = new URLSearchParams({ part: 'snippet', videoId: id, maxResults: '20', order: 'relevance', textFormat: 'plainText' });
+    const r = await jsonFetch(`${API()}/youtube/v3/commentThreads?${q}`, auth);
+    out.comments = (r.items ?? []).map((i: any) => String(i.snippet?.topLevelComment?.snippet?.textDisplay ?? '').slice(0, 300)).filter(Boolean);
+  } catch {}
   return out;
 }

@@ -9,6 +9,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { api, serveArtifact } from './api.ts';
 import { recover, tick, autopilot, busy } from './pipeline.ts';
 import { publishTick, statsTick } from './publish.ts';
+import { learningTick } from './learning.ts';
+import { scoutTick } from './skills.ts';
 import { WEB_DIST, PORT, ROOT, HOST, BASE_URL } from './paths.ts';
 import { guard, authRequired, applyEnvPassword } from './auth.ts';
 
@@ -51,6 +53,8 @@ setInterval(safe('autopilot', autopilot), 60_000);
 setInterval(safe('publish', publishTick), 30_000);
 setInterval(safe('stats', () => statsTick()), 15 * 60_000);
 setInterval(safe('backup', backupTick), 10 * 60_000);
+setInterval(safe('learning', learningTick), 10 * 60_000);
+setInterval(safe('scout', scoutTick), 30 * 60_000);
 setTimeout(safe('autopilot', autopilot), 5000);
 
 // Keep the Mac awake only while a video is being worked on.

@@ -1,5 +1,5 @@
 import { NavLink, Outlet, Link } from 'react-router-dom';
-import { LayoutDashboard, FolderKanban, Columns3, CheckCircle2, CalendarDays, Plug, Settings, Play, Pause, FlaskConical, LogOut } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, Columns3, CheckCircle2, CalendarDays, Plug, Settings, Play, Pause, FlaskConical, LogOut, Brain, Puzzle, Bell } from 'lucide-react';
 import { useData, useLive } from './live';
 import { put, post } from './api';
 import { useAction } from './ui';
@@ -11,6 +11,9 @@ const NAV = [
   { to: '/approvals', label: 'Approvals', icon: CheckCircle2, badge: 'awaiting' },
   { to: '/calendar', label: 'Calendar', icon: CalendarDays },
   { to: '/channels', label: 'Channels', icon: Plug },
+  { to: '/learning', label: 'Learning', icon: Brain, badge: 'proposals' },
+  { to: '/skills', label: 'Skills', icon: Puzzle },
+  { to: '/inbox', label: "What's new", icon: Bell, badge: 'unread' },
   { to: '/settings', label: 'Settings', icon: Settings },
 ] as const;
 
@@ -37,7 +40,7 @@ export function Layout() {
             <NavLink key={n.to} to={n.to} end={'end' in n} className={link}>
               <n.icon className="size-4" />
               <span className="flex-1">{n.label}</span>
-              {'badge' in n && o?.awaiting > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-[11px] font-semibold text-white">{o.awaiting}</span>}
+              {'badge' in n && o?.[n.badge] > 0 && <span className="rounded-full bg-orange-500 px-1.5 text-[11px] font-semibold text-white">{o[n.badge]}</span>}
             </NavLink>
           ))}
         </nav>
@@ -71,7 +74,7 @@ export function Layout() {
             <NavLink key={n.to} to={n.to} end={'end' in n}
               className={({ isActive }) => `flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium ${isActive ? 'bg-white shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-800 dark:ring-zinc-700' : 'text-zinc-500'}`}>
               <n.icon className="size-3.5" />{n.label}
-              {'badge' in n && o?.awaiting > 0 && <span className="rounded-full bg-orange-500 px-1 text-[10px] text-white">{o.awaiting}</span>}
+              {'badge' in n && o?.[n.badge] > 0 && <span className="rounded-full bg-orange-500 px-1 text-[10px] text-white">{o[n.badge]}</span>}
             </NavLink>
           ))}
         </nav>

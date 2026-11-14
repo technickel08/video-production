@@ -18,6 +18,7 @@ const EMPTY: Partial<Project> = {
   voice: true, music: true, captions: true, notes: '', post_times: ['18:00'], post_days: [0, 1, 2, 3, 4, 5, 6], daily_cap: 1,
   autopilot: false, auto_publish: false, active: true, channel_ids: [], visibility: 'public',
   voice_name: '', voice_speed: 0, voice_style: '', music_mood: '', production_step: true, review_steps: true,
+  adapt_mode: 'ask', focus: '', extra_skills: [], next_style: null, analyzed_at: null,
 };
 
 export default function ProjectEdit() {
@@ -76,6 +77,11 @@ export default function ProjectEdit() {
             </div>
           </Section>
 
+          <Section title="Current focus" description="An angle within the niche that research prefers. The learning loop proposes changes here (a “shift”); you can also set it yourself.">
+            <input className="input" value={p.focus ?? ''} onChange={(e) => set('focus', e.target.value)} placeholder="None — any topic in the niche" />
+            {p.next_style && <p className="mt-2 text-xs text-accent-700 dark:text-accent-300">The next video will try <b>{p.next_style.replace('skill:', '')}</b> once.</p>}
+          </Section>
+
           <Section title="Format">
             <div className="grid gap-2 sm:grid-cols-2">
               {FORMATS.map((f) => (
@@ -118,6 +124,7 @@ export default function ProjectEdit() {
           <Section title="Sound">
             <Toggle checked={!!p.voice} onChange={(v) => set('voice', v)} label="AI voiceover" hint="Narration generated from the script" />
             {p.voice && <VoiceSettings p={p} set={set} />}
+            <ExtraSkills p={p} set={set} />
             <Toggle checked={!!p.music} onChange={(v) => set('music', v)} label="Background music" />
             {p.music && <div className="mb-2 ml-1 border-l-2 border-zinc-100 pl-4 dark:border-zinc-800">
               <label className="label">Music mood</label>
@@ -172,6 +179,23 @@ export default function ProjectEdit() {
 
           <Section title="Automation">
             <Toggle checked={!!p.autopilot} onChange={(v) => set('autopilot', v)} label="Autopilot" hint="Start new videos by itself, up to the daily maximum" />
+            <div className="mb-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+              <div className="text-sm font-medium">Learning from results</div>
+              <p className="mb-2 text-xs text-zinc-500">After a few published videos, the system writes a playbook from their numbers and proposes changes. Confident small tweaks (length, posting time, style, voice) always apply by themselves; pivots to a new niche always ask you.</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {([['ask', 'Ask me before shifts', 'A new angle or focus waits for your approval.'], ['auto', 'Fully automatic', 'Shifts apply by themselves; you are notified and can undo.']] as const).map(([id, label, hint]) => (
+                  <label key={id} className={`flex cursor-pointer items-start gap-2 rounded-lg border p-2.5 ${p.adapt_mode === id ? 'border-accent-500 bg-accent-50 dark:bg-accent-500/10' : 'border-zinc-200 dark:border-zinc-700'}`}>
+                    <input type="radio" className="mt-1" checked={(p.adapt_mode ?? 'ask') === id} onChange={() => set('adapt_mode', id)} />
+                    <span><span className="block text-sm font-medium">{label}</span><span className="block text-xs text-zinc-500">{hint}</span></span>
+                  </label>
+                ))}
+              </div>
+              {!isNew && p.adapt_stats && (p.adapt_stats.approved + p.adapt_stats.dismissed > 0) && (
+                <p className="mt-2 text-xs text-zinc-500">You approved {p.adapt_stats.approved} of the last {p.adapt_stats.approved + p.adapt_stats.dismissed} proposals.
+                  {p.adapt_stats.approved >= 5 && p.adapt_stats.approved / (p.adapt_stats.approved + p.adapt_stats.dismissed) >= 0.8 && p.adapt_mode !== 'auto' ? ' That is a good track record — fully automatic may save you time.' : ''}</p>
+              )}
+              {!isNew && <Link to={`/learning/${id}`} className="mt-2 inline-block text-xs text-accent-600 underline">Open the playbook</Link>}
+            </div>
             <Toggle checked={!!p.production_step} onChange={(v) => set('production_step', v)} label="Production design step" hint="Before the film is made, Claude plans scenes, cast, costumes, sets and colours" />
             <Toggle checked={!!p.review_steps} onChange={(v) => set('review_steps', v)} label="Review each step" hint={`Pause after research, script${p.production_step ? ' and production' : ''} until you approve or ask for changes`} />
             <Toggle checked={!!p.auto_publish} onChange={(v) => set('auto_publish', v)} label="Skip final approval" hint="Schedule videos as soon as they pass checks" />
@@ -222,6 +246,20 @@ function WhatWorks({ id }: { id: string }) {
 const MOODS = ['Epic and cinematic', 'Mysterious and dark', 'Calm and reflective', 'Upbeat and energetic', 'Tense, building suspense', 'Traditional Indian instruments', 'Light and playful', 'Minimal ambient'];
 const SPEEDS = [{ v: 0, label: 'Auto' }, { v: 0.85, label: 'Slow' }, { v: 0.92, label: 'Relaxed' }, { v: 1, label: 'Normal' }, { v: 1.1, label: 'Fast' }];
 const DELIVERY = ['Calm documentary narrator', 'Dramatic storyteller, builds suspense', 'Energetic and punchy', 'Warm and conversational', 'Serious news anchor'];
+
+function ExtraSkills({ p, set }: { p: Partial<Project>; set: <K extends keyof Project>(k: K, v: Project[K]) => void }) {
+  const { data } = useData<{ id: number; slug: string; name: string; kind: string; summary?: string }[]>('/skills/installed');
+  const list = (data ?? []).filter((s) => s.kind !== 'visual');
+  if (!list.length) return null;
+  const on = p.extra_skills ?? [];
+  return (
+    <div className="mb-2 ml-1 space-y-1 border-l-2 border-zinc-100 pl-4 dark:border-zinc-800">
+      <div className="label">Added skills</div>
+      {list.map((s) => <Toggle key={s.slug} checked={on.includes(s.slug)} onChange={(v) => set('extra_skills', v ? [...on, s.slug] : on.filter((x) => x !== s.slug))}
+        label={`${s.name} (${s.kind})`} hint={s.summary} />)}
+    </div>
+  );
+}
 
 function VoiceSettings({ p, set }: { p: Partial<Project>; set: <K extends keyof Project>(k: K, v: Project[K]) => void }) {
   const { data: voices } = useData<Voice[]>('/voices');

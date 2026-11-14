@@ -15,6 +15,9 @@ import Calendar from './pages/Calendar';
 import Channels from './pages/Channels';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
+import Learning from './pages/Learning';
+import Skills from './pages/Skills';
+import Inbox from './pages/Inbox';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -33,6 +36,10 @@ createRoot(document.getElementById('root')!).render(
             <Route path="calendar" element={<Calendar />} />
             <Route path="channels" element={<Channels />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="learning" element={<Learning />} />
+            <Route path="learning/:pid" element={<Learning />} />
+            <Route path="skills" element={<Skills />} />
+            <Route path="inbox" element={<Inbox />} />
           </Route>
         </Routes>
       </BrowserRouter>

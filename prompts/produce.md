@@ -14,6 +14,7 @@ Produce a finished video with the **lemo-opuscar** skill. This is an automated, 
 - Voiceover: {{voice}}.
 - Music: {{music}}. Subtitles burned in: {{captions}}. Language: {{language}}.
 {{production}}
+{{extra_skills}}
 - No material of the user's own: draw or generate everything; no real brands, logos or people's likenesses.
 - Notes from the owner: {{notes}}
 

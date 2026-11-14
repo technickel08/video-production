@@ -1,7 +1,7 @@
 import { all, get, run, now, getSetting, updateVideo } from './db.ts';
 import { changed, notify } from './events.ts';
 import { approve } from './pipeline.ts';
-import { loadPostCtx, type Channel, type PostCtx, type PublishResult, type Stats } from './publishers/common.ts';
+import { loadPostCtx, type Channel, type PostCtx, type PublishResult, type Stats, type Deep } from './publishers/common.ts';
 import * as youtube from './publishers/youtube.ts';
 import * as instagram from './publishers/instagram.ts';
 
@@ -11,6 +11,7 @@ interface Publisher {
   handleCallback: (code: string) => Promise<number[]>;
   publish: (ctx: PostCtx) => Promise<PublishResult>;
   stats: (c: Channel, ids: string[]) => Promise<Record<string, Stats>>;
+  deep?: (c: Channel, id: string) => Promise<Deep>;
   /** Upload ahead of time (platform schedules it) vs. post exactly at the scheduled time. */
   uploadsAhead: boolean;
 }
@@ -101,13 +102,30 @@ function rollUp() {
   }
 }
 
+/** Fixed points in a post's life, so a new video is compared fairly with an older one. */
+export const CHECKPOINTS: [string, number][] = [['24h', 24], ['3d', 72], ['7d', 168]];
+
+/** Keep the latest numbers, and freeze a copy (with retention and top comments) when a post passes each checkpoint. */
+async function recordCheckpoints(channel: Channel, p: { id: number; platform: string; external_id: string; published_at: string }, x: Stats) {
+  const upsert = (cp: string, data: unknown) => run(`INSERT INTO metrics(post_id, checkpoint, taken_at, data) VALUES (?,?,?,?)
+    ON CONFLICT(post_id, checkpoint) DO UPDATE SET taken_at=excluded.taken_at, data=excluded.data`, p.id, cp, now(), JSON.stringify(data));
+  upsert('latest', x);
+  const ageH = (Date.now() - new Date(p.published_at).getTime()) / 3600_000;
+  for (const [cp, h] of CHECKPOINTS) {
+    if (ageH < h || get('SELECT 1 FROM metrics WHERE post_id=? AND checkpoint=?', p.id, cp)) continue;
+    let deep: Deep = {};
+    try { deep = (await PUBLISHERS[channel.platform].deep?.(channel, p.external_id)) ?? {}; } catch (e: any) { console.warn(`[stats] detail for post ${p.id}: ${e?.message}`); }
+    upsert(cp, { ...x, ...deep, age_hours: Math.round(ageH) });
+  }
+}
+
 let lastStats = 0;
 export async function statsTick(force = false) {
   if (!force && Date.now() - lastStats < 6 * 3600_000) return;
   lastStats = Date.now();
   const since = new Date(Date.now() - 30 * 86400_000).toISOString();
-  const rows = all<{ id: number; channel_id: number; platform: string; external_id: string }>(
-    `SELECT id, channel_id, platform, external_id FROM posts WHERE status='published' AND external_id IS NOT NULL AND published_at>=?`, since);
+  const rows = all<{ id: number; channel_id: number; platform: string; external_id: string; published_at: string }>(
+    `SELECT id, channel_id, platform, external_id, published_at FROM posts WHERE status='published' AND external_id IS NOT NULL AND published_at>=?`, since);
   const byChannel = new Map<number, typeof rows>();
   for (const r of rows) byChannel.set(r.channel_id, [...(byChannel.get(r.channel_id) || []), r]);
   const date = new Date().toISOString().slice(0, 10);
@@ -121,6 +139,7 @@ export async function statsTick(force = false) {
         run(`INSERT INTO stats(post_id,date,views,likes,comments) VALUES (?,?,?,?,?)
           ON CONFLICT(post_id,date) DO UPDATE SET views=excluded.views, likes=excluded.likes, comments=excluded.comments`,
           p.id, date, x.views ?? null, x.likes ?? null, x.comments ?? null);
+        await recordCheckpoints(channel, p, x);
       }
     } catch (e: any) { console.warn(`stats for channel ${cid} failed:`, e?.message); }
   }
